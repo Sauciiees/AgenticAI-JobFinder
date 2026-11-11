@@ -1,3 +1,4 @@
+import secrets
 from datetime import datetime
 from typing import Any
 
@@ -37,6 +38,8 @@ class User(Base):
     hashed_password: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=True)
     is_guest: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # Goes into every login token; tokens with a different key are rejected (see auth.py).
+    token_key: Mapped[str | None] = mapped_column(String, nullable=True, default=lambda: secrets.token_hex(16))
 
     # The CV lives in storage (local folder or S3 bucket) under this key, e.g. "user_1/cv.pdf".
     cv_filename: Mapped[str | None] = mapped_column(String, nullable=True)

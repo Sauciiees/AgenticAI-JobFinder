@@ -82,3 +82,38 @@ def test_proxy_forwarded_ip_is_used(client, monkeypatch):
         res = client.post("/api/login", json={"username": f"fwd{i}", "password": "whatever-123"},
                           headers={"X-Proxy-Secret": "s3cret-proxy-value", "X-Client-IP": f"10.1.0.{i}"})
         assert res.status_code == 401  # different real IPs: never rate limited
+
+
+def test_logout_invalidates_copies_of_the_old_token(client):
+    _signup_and_login(client, "logout_everywhere")
+    stolen = client.cookies.get("jf_session")
+    assert client.post("/api/logout", headers={"X-CSRF-Token": client.cookies.get("jf_csrf")}).status_code == 200
+    res = client.get("/api/me", headers={"Authorization": f"Bearer {stolen}"})
+    assert res.status_code == 401
+
+
+def test_token_of_deleted_account_does_not_work_for_a_reused_id(client):
+    """SQLite reuses ids; the token_key stops an old token from opening the new account."""
+    from auth import create_access_token
+    from database import SessionLocal
+    from models import User
+
+    with SessionLocal() as db:
+        victim = User(username="reused_id_user", hashed_password="x", token_key="new-key")
+        db.add(victim)
+        db.commit()
+        uid = victim.id
+    old_token = create_access_token({"sub": str(uid), "k": "key-of-the-deleted-account"})
+    assert client.get("/api/me", headers={"Authorization": f"Bearer {old_token}"}).status_code == 401
+
+
+def test_token_without_key_rejected(client, make_user):
+    from auth import create_access_token
+    from database import SessionLocal
+    from models import User
+
+    username, _, _ = make_user()
+    with SessionLocal() as db:
+        uid = db.query(User).filter_by(username=username).one().id
+    legacy = create_access_token({"sub": str(uid)})
+    assert client.get("/api/me", headers={"Authorization": f"Bearer {legacy}"}).status_code == 401

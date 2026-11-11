@@ -72,6 +72,18 @@ def _reset_limits():
 
 
 @pytest.fixture(autouse=True)
+def _pinned_limit_clock(monkeypatch):
+    """Counters use fixed windows; pin their clock to the middle of an hour so no window ends mid-test."""
+    import time
+
+    import limits
+
+    now = time.time()
+    pinned = now - now % 3600 + 1800
+    monkeypatch.setattr(limits, "_clock", lambda: pinned)
+
+
+@pytest.fixture(autouse=True)
 def _fake_embeddings(monkeypatch):
     """Replace Gemini embeddings with a deterministic bag-of-letters vector, so retrieval is testable offline."""
     from agent import vector_store
@@ -114,9 +126,12 @@ def make_user(client):
         # Tests juggle several users on one client, so they authenticate with a Bearer header
         # rather than the (single) cookie jar. The cookie flow has its own tests.
         client.cookies.clear()
-        from auth import create_access_token
+        from auth import token_for
+        from database import SessionLocal
+        from models import User
 
-        token = create_access_token({"sub": str(res.json()["user_id"])})
+        with SessionLocal() as db:
+            token = token_for(db.get(User, res.json()["user_id"]))
         return username, password, {"Authorization": f"Bearer {token}"}
 
     return _make

@@ -11,7 +11,10 @@ import config
 def _make_engine():
     if config.IS_POSTGRES:
         # pool_pre_ping: hosted Postgres (Neon) closes idle connections, so check before use.
-        return create_engine(config.DATABASE_URL, pool_pre_ping=True, pool_size=5, max_overflow=5)
+        # prepare_threshold=None: no server-side prepared statements, which PgBouncer-style poolers
+        # (Neon's pooled endpoint) can't track across connections.
+        return create_engine(config.DATABASE_URL, pool_pre_ping=True, pool_size=5, max_overflow=5,
+                             connect_args={"prepare_threshold": None})
     if config.DATABASE_URL.startswith("sqlite:///./"):
         os.makedirs(os.path.dirname(config.DATABASE_URL.removeprefix("sqlite:///")) or ".", exist_ok=True)
     # check_same_thread=False: FastAPI hands one session to several threads over a request.

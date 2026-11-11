@@ -39,6 +39,8 @@ def delete_user_everything(db: Session, user: User) -> None:
     thread_ids = list(db.scalars(select(ChatSession.session_id).where(ChatSession.user_id == user.id)))
     get_storage().delete_prefix(user_prefix(user.id))
     _delete_threads(thread_ids)
+    # SQLite can hand this id to the next new user; don't let them inherit today's counters.
+    db.execute(delete(UsageCounter).where(UsageCounter.key.like(f"%:user:{user.id}")))
     db.delete(user)
     db.commit()
 

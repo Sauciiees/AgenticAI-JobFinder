@@ -24,7 +24,14 @@ import retention
 from agent import vector_store
 from agent.graph import app as langgraph_app
 from agent.parser import CONTENT_TYPES, chunk_text, detect_kind, extract_text
-from auth import clear_login_cookies, get_current_user, get_password_hash, set_login_cookies, verify_password_or_dummy
+from auth import (
+    clear_login_cookies,
+    get_current_user,
+    get_password_hash,
+    rotate_token_key,
+    set_login_cookies,
+    verify_password_or_dummy,
+)
 from database import get_db, utcnow
 from storage import get_storage, user_prefix
 from tools import job_boards
@@ -632,12 +639,19 @@ async def login(user: UserAuthRequest, request: Request, response: Response, db:
     if db_user.is_guest:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password")
 
-    set_login_cookies(response, db_user.id)
+    set_login_cookies(response, db_user)
     return _user_payload(db_user)
 
 
 @app.post("/api/logout")
-async def logout(response: Response):
+async def logout(request: Request, response: Response, db: Session = Depends(get_db)):
+    """Signs out everywhere: the user's token key is rotated, so any copy of the old token stops working."""
+    try:
+        user = get_current_user(request, db)
+        rotate_token_key(user)
+        db.commit()
+    except HTTPException:
+        pass  # already signed out
     clear_login_cookies(response)
     return {"status": "signed_out"}
 
@@ -659,7 +673,7 @@ async def start_guest(req: GuestRequest, request: Request, response: Response, d
         guest = demo.create_guest(db)
     except Exception:
         raise _server_error("GUEST") from None
-    set_login_cookies(response, guest.id)
+    set_login_cookies(response, guest)
     return {**_user_payload(guest), "runs_left": _runs_left(db, guest),
             "runs_per_day": config.USER_DAILY_AGENT_RUNS if _quotas_enforced() else None}
 

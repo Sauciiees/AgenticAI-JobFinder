@@ -165,8 +165,13 @@ def job_search_agent(state: State):
   safe_kw = search_keyword.encode('ascii', 'ignore').decode('ascii')
   print(f"Total jobs found for '{safe_kw}': {len(all_jobs)}")
 
+  # Name the boards that actually returned jobs (some may be skipped, e.g. when the Serper budget is used up).
+  sources = sorted({str(j.get("platform") or "").split(" ")[0] for j in all_jobs} - {""})
+  where = f" on {', '.join(sources)}" if sources else ""
+  summary = (f"Found {len(all_jobs)} jobs for '{search_keyword}'{where}." if all_jobs
+             else f"I couldn't find any recent jobs for '{search_keyword}'. Try a broader title or a longer time range.")
   return {
-      "messages": [HumanMessage(content=f"Found {len(all_jobs)} jobs for '{search_keyword}' across LinkedIn, Indeed, JobsDB, and JobBKK.")],
+      "messages": [AIMessage(content=summary)],
       "raw_jobs": all_jobs,
   }
 

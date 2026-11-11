@@ -46,14 +46,19 @@ A cold start of 30–60 seconds is accepted. The frontend shows a "waking up" st
 
 ## Phases
 
-1. **Clean up.** Delete the Streamlit app, move `scratch/` into `tests/`, add CI. *(done on `chore/phase-1-cleanup`)*
+1. **Clean up.** Delete the Streamlit app, move `scratch/` into `tests/`, add CI. *(done)*
 2. **Data.** Postgres, Alembic, pgvector, the Postgres checkpointer, object storage, SQLAlchemy `Mapped[]` models. *(done)*
 3. **Split and deploy.** The automation flag, the slim public image, Render, the Pages proxy, cookie login. *(done)*
 4. **Public safety.** Turnstile, guest accounts and the dry run, quotas, retention, headers, Sentry. *(done)*
-5. **Polish.** Seeded data, the waking-up screen, the README with an architecture diagram, the demo video.
+5. **Polish.** Seeded data, the waking-up screen, the README with an architecture diagram, the demo video. *(done, except recording the video)*
 
 ## Known follow-ups from Phase 1
 
 - mypy checks only the files listed in `pyproject.toml`. `server.py`, `main.py` and the Playwright tools join that list after Phases 2 and 3.
 - ~~`models.py` still uses `datetime.utcnow` defaults.~~ Fixed in Phase 2.
 - `scratch/` is untracked but still on disk locally. Delete it whenever you like.
+
+## Changes made during implementation
+
+- **Search in the demo.** JobsDB, Indeed and JobBKK searches drive a real browser, which the slim image doesn't have. In the demo they go through Serper's `site:` search instead, with a daily Serper budget (default 80, about the free tier's 2,500 a month). LinkedIn's public search page works over plain HTTP in both builds.
+- **Token key.** Every login token carries a per-user key. SQLite reuses the ids of deleted users, so without it an old token could open a newer account. Logout rotates the key, which signs the user out everywhere.

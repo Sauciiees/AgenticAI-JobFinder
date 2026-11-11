@@ -59,10 +59,20 @@ def create_access_token(data: dict) -> str:
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def set_login_cookies(response: Response, user_id: int) -> None:
+def token_for(user: models.User) -> str:
+    """A login token bound to the user's current token_key."""
+    return create_access_token({"sub": str(user.id), "k": user.token_key})
+
+
+def rotate_token_key(user: models.User) -> None:
+    """Invalidates every token issued to this user so far (sign out everywhere)."""
+    user.token_key = secrets.token_hex(16)
+
+
+def set_login_cookies(response: Response, user: models.User) -> None:
     max_age = ACCESS_TOKEN_EXPIRE_MINUTES * 60
     response.set_cookie(
-        config.SESSION_COOKIE, create_access_token({"sub": str(user_id)}),
+        config.SESSION_COOKIE, token_for(user),
         max_age=max_age, httponly=True, secure=config.COOKIE_SECURE, samesite="strict", path="/",
     )
     response.set_cookie(
@@ -110,6 +120,7 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> models.
         if not isinstance(user_id_str, str):
             raise _credentials_exception()
         token_user_id = int(user_id_str)
+        token_key = payload.get("k")
     except (InvalidTokenError, ValueError):
         raise _credentials_exception() from None
 
@@ -117,6 +128,7 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> models.
         _check_csrf(request)
 
     user = db.get(models.User, token_user_id)
-    if user is None:
+    # The key check rejects tokens of deleted accounts whose id was reused, and signed-out tokens.
+    if user is None or not user.token_key or not isinstance(token_key, str)             or not hmac.compare_digest(token_key, user.token_key):
         raise _credentials_exception()
     return user

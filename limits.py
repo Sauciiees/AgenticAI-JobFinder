@@ -21,8 +21,12 @@ HOUR = 3600
 DAY = 86400
 
 
+# Indirection so tests can pin the clock (a window boundary mid-test would reset a counter).
+_clock = time.time
+
+
 def _window(window_seconds: int, now: float | None = None) -> tuple[int, int]:
-    now_i = int(now if now is not None else time.time())
+    now_i = int(now if now is not None else _clock())
     start = now_i - now_i % window_seconds
     return start, now_i
 
