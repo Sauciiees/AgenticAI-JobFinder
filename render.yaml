@@ -9,7 +9,9 @@ services:
     dockerfilePath: ./api.dockerfile
     dockerContext: .
     healthCheckPath: /api/health
-    # Deploy a commit on main only after its GitHub checks (CI) have passed.
+    # The branch Render deploys from.
+    branch: chore/phase-1-cleanup
+    # Deploy a commit only after its GitHub checks (CI) have passed.
     autoDeployTrigger: checksPass
     envVars:
       - key: APP_ENV

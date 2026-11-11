@@ -42,7 +42,14 @@ def pytest_sessionstart(session):
     elif os.getenv("TEST_POSTGRES") == "1":
         import pgserver
 
-        _pg_server = pgserver.get_server(os.path.join(workdir, "pg"), cleanup_mode="stop")
+        # initdb occasionally fails on Windows (file locks); retry in a fresh folder.
+        for attempt in range(3):
+            try:
+                _pg_server = pgserver.get_server(os.path.join(workdir, f"pg{attempt}"), cleanup_mode="stop")
+                break
+            except Exception:
+                if attempt == 2:
+                    raise
         os.environ["DATABASE_URL"] = _pg_server.get_uri()
     else:
         os.environ["DATABASE_URL"] = f"sqlite:///{Path(workdir, 'test.db').as_posix()}"

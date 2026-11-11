@@ -42,7 +42,8 @@ Save the **site key** → `TURNSTILE_SITE_KEY` and **secret key** → `TURNSTILE
 
 ## 4. API: Render
 
-1. Push this repository to GitHub (the `main` branch).
+1. Push this repository to GitHub. Render deploys the branch named in `render.yaml`
+   (`branch: chore/phase-1-cleanup`); change it there if you deploy from another branch.
 2. https://render.com → **New** → **Blueprint** → pick the repository. Render reads `render.yaml`.
 3. Fill in the values it asks for: `DATABASE_URL`, `GOOGLE_API_KEY`, `SERPER_API_KEY`, the four
    `S3_*` values, `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY`. Leave `SENTRY_*` and
@@ -59,7 +60,8 @@ If Render reports `autoDeployTrigger` as unknown, delete that line from `render.
 ## 5. Web app: Cloudflare Pages
 
 1. Cloudflare dashboard → **Workers & Pages** → **Create** → **Pages** → connect the GitHub repository.
-2. Build settings: framework *None*, build command *(empty)*, build output directory `frontend`.
+2. Build settings: **production branch** `chore/phase-1-cleanup`, framework *None*, build command *(empty)*,
+   build output directory `frontend`.
    Root directory stays the repository root, so `functions/` (the API proxy) is picked up.
 3. **Environment variables** (Production): `API_ORIGIN` = your Render URL (no trailing slash),
    `PROXY_SHARED_SECRET` = the value from Render.
@@ -74,6 +76,11 @@ Repository → **Settings** → **Secrets and variables** → **Actions**:
 
 Then **Actions** → *Daily data cleanup* → **Run workflow** once to check it. It should end with
 `{"status":"ok",...}`.
+
+GitHub only runs *scheduled* workflows from the repository's **default branch**. If you deploy
+from `chore/phase-1-cleanup` without merging, either make it the default branch (Settings → General → Default
+branch), or skip the schedule: the API also runs the cleanup every time it starts, and the free
+instance restarts after each idle sleep, so old data is still removed.
 
 ## 7. Optional: Sentry error tracking
 

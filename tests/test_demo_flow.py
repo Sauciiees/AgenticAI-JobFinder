@@ -271,3 +271,18 @@ def test_serper_budget_stops_calls(monkeypatch):
     for _ in range(4):
         job_tools._serper_search_structured("x", "y", "z", "P")
     assert len(calls) == 2
+
+
+def test_cleanup_runs_when_the_server_starts(monkeypatch):
+    """The scheduled GitHub Action only runs from the default branch; startup cleanup covers the rest."""
+    import threading
+
+    from fastapi.testclient import TestClient
+
+    import retention
+    import server
+
+    ran = threading.Event()
+    monkeypatch.setattr(retention, "run_cleanup", lambda db: ran.set() or {})
+    with TestClient(server.app, base_url="https://testserver"):
+        assert ran.wait(5)

@@ -4,6 +4,7 @@ import os
 import re
 import traceback
 import uuid
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
@@ -41,7 +42,29 @@ if config.SENTRY_DSN:
     sentry_sdk.init(dsn=config.SENTRY_DSN, environment=config.APP_ENV, send_default_pii=False,
                     traces_sample_rate=0.0)
 
-app = FastAPI(title="Agentic AI Job Finder API", version="1.0")
+def _startup_cleanup() -> None:
+    """Retention also runs whenever the server starts. The free host sleeps when idle and starts on
+    the next visit, so old data is cleared even without the scheduled GitHub Action (which only
+    runs from the repository's default branch)."""
+    from database import SessionLocal
+
+    try:
+        with SessionLocal() as db:
+            retention.run_cleanup(db)
+    except Exception:
+        print("Startup cleanup failed: " + traceback.format_exc())
+        sentry_sdk.capture_exception()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    import threading
+
+    threading.Thread(target=_startup_cleanup, name="startup-cleanup", daemon=True).start()
+    yield
+
+
+app = FastAPI(title="Agentic AI Job Finder API", version="1.0", lifespan=lifespan)
 
 # Uploaded CVs live in storage (a local folder or a private bucket). They are never served as
 # static files: a user gets their own CV only through the signed-in /api/user/cv endpoint.
