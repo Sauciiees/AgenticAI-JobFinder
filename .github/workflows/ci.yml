@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]  # every branch, so work is tested before any pull request
   pull_request:
 
 permissions:
