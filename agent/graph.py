@@ -1,10 +1,10 @@
 import os
 import sqlite3
 
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
+import config
 from agent.nodes import (
   application_tracker_node,
   asset_tailoring_agent,
@@ -70,9 +70,39 @@ workflow.add_edge("auto_apply_node", "application_tracker_node")
 workflow.add_edge("application_tracker_node", END)
 
 # 6. Compile graph with checkpointer
-# Create or connect to the checkpoint database. It lives in data/ beside jobfinder.db, so a local run
-# and the Docker container (which mounts data/) share the same chat history.
-os.makedirs("data", exist_ok=True)
-conn = sqlite3.connect(os.getenv("CHECKPOINT_DB", "data/checkpoints.sqlite"), check_same_thread=False)
-memory = SqliteSaver(conn)
+def _build_checkpointer():
+    """Postgres when DATABASE_URL is Postgres (the hosted demo), otherwise a local SQLite file."""
+    if config.IS_POSTGRES:
+        from langgraph.checkpoint.postgres import PostgresSaver
+        from psycopg.rows import dict_row
+        from psycopg_pool import ConnectionPool
+
+        conninfo = config.DATABASE_URL.replace("postgresql+psycopg://", "postgresql://", 1)
+        pool = ConnectionPool(
+            conninfo=conninfo,
+            min_size=1,
+            max_size=5,
+            # prepare_threshold=0: works through PgBouncer-style poolers (Neon's pooled endpoint).
+            kwargs={"autocommit": True, "prepare_threshold": 0, "row_factory": dict_row},
+            check=ConnectionPool.check_connection,
+            open=True,
+        )
+        saver = PostgresSaver(pool)
+        saver.setup()
+        return saver
+
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
+    os.makedirs(os.path.dirname(config.CHECKPOINT_DB) or ".", exist_ok=True)
+    conn = sqlite3.connect(config.CHECKPOINT_DB, check_same_thread=False)
+    return SqliteSaver(conn)
+
+
+memory = _build_checkpointer()
 app = workflow.compile(checkpointer=memory)
+
+
+def delete_threads(thread_ids: list[str]) -> None:
+    """Removes the agent's saved state for these chats (account deletion, retention)."""
+    for thread_id in thread_ids:
+        memory.delete_thread(thread_id)

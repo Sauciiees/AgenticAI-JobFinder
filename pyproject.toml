@@ -30,13 +30,17 @@ ignore_missing_imports = true
 warn_unused_ignores = true
 # Report errors only for the files listed below; imported modules are type-checked silently.
 follow_imports = "silent"
-# Files that pass today. Add each file here once it is cleaned up, e.g. server.py and models.py
-# after the move to SQLAlchemy 2.0 Mapped[] models (Phase 2), and the browser-automation tools
-# after the public/admin split (Phase 3). Never remove a file from this list to make CI pass.
+# Files that pass today. Add each file here once it is cleaned up (server.py after its Phase 3
+# rework, the browser-automation tools after the public/admin split). Never remove a file from
+# this list to make CI pass.
 files = [
     "auth.py",
+    "config.py",
     "database.py",
+    "db_migrate.py",
+    "limits.py",
     "models.py",
+    "storage.py",
     "agent",
     "tools/__init__.py",
     "tools/job_tools.py",

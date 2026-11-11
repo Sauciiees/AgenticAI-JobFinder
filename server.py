@@ -1,40 +1,32 @@
 import json
 import os
 import re
-import threading
-import time
 import traceback
 import uuid
-from collections import defaultdict, deque
 
-from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from langgraph.types import Command
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+import config  # noqa: I001  (loads .env before anything reads settings)
+import limits
 import models
+from agent import vector_store
+from agent.graph import app as langgraph_app
+from agent.parser import CONTENT_TYPES, chunk_text, detect_kind, extract_text
 from auth import create_access_token, get_current_user, get_password_hash, verify_password
-from database import engine, get_db
-
-load_dotenv()
-models.Base.metadata.create_all(bind=engine)
-
-from agent.graph import app as langgraph_app  # noqa: E402  (needs .env loaded first)
-from agent.parser import parse_and_store_document  # noqa: E402  (needs .env loaded first)
-from agent.vector_store import vector_store  # noqa: E402  (needs .env loaded first)
-from tools import job_boards  # noqa: E402  (needs .env loaded first)
+from database import get_db, utcnow
+from storage import get_storage, user_prefix
+from tools import job_boards
 
 app = FastAPI(title="Agentic AI Job Finder API", version="1.0")
 
-# Uploaded CVs live here. They are NOT served as static files: a user gets their own CV only
-# through the signed-in /api/user/cv endpoint.
-UPLOAD_DIR = "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-MAX_CV_BYTES = 10 * 1024 * 1024  # 10 MB
+# Uploaded CVs live in storage (a local folder or a private bucket). They are never served as
+# static files: a user gets their own CV only through the signed-in /api/user/cv endpoint.
+MAX_CV_BYTES = config.MAX_CV_BYTES
 
 
 def _server_error(context: str) -> HTTPException:
@@ -54,36 +46,6 @@ def _require_own_session(session_id: str, user: models.User, db: Session) -> mod
     return session
 
 
-class _RateLimiter:
-    """In-memory sliding-window limiter (per process). Behind a reverse proxy, configure uvicorn's
-    --proxy-headers / --forwarded-allow-ips so request.client.host is the real client address."""
-
-    def __init__(self, max_hits: int, window_seconds: int):
-        self.max_hits, self.window = max_hits, window_seconds
-        self.hits: dict[str, deque] = defaultdict(deque)
-        self.lock = threading.Lock()
-
-    def check(self, key: str) -> None:
-        now = time.monotonic()
-        with self.lock:
-            q = self.hits[key]
-            while q and now - q[0] > self.window:
-                q.popleft()
-            if len(q) >= self.max_hits:
-                retry = int(self.window - (now - q[0])) + 1
-                raise HTTPException(
-                    status_code=429,
-                    detail=f"Too many attempts. Try again in {retry} seconds.",
-                    headers={"Retry-After": str(retry)},
-                )
-            q.append(now)
-
-
-login_ip_limiter = _RateLimiter(max_hits=20, window_seconds=300)       # 20 tries / 5 min per IP
-login_user_limiter = _RateLimiter(max_hits=8, window_seconds=300)      # 8 tries / 5 min per username
-signup_ip_limiter = _RateLimiter(max_hits=5, window_seconds=3600)      # 5 accounts / hour per IP
-
-
 def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
@@ -96,7 +58,7 @@ async def health():
 async def frontend_config():
     """Settings the web app needs. browser_viewer_url is set in Docker, where the visible browser
     windows (job-board sign-in, auto-apply) run on a virtual screen shown through noVNC."""
-    return {"browser_viewer_url": os.getenv("BROWSER_VIEWER_URL") or None}
+    return {"browser_viewer_url": config.BROWSER_VIEWER_URL}
 
 # Updated Pydantic Models to require user_id
 class SearchRequest(BaseModel):
@@ -146,47 +108,46 @@ class NewSessionRequest(BaseModel):
 # Add db: Session = Depends(get_db) to the parameters
 @app.post("/api/upload-resume")
 async def upload_resume(
-    session_id: str, 
+    session_id: str | None = None,
     file: UploadFile = File(...),
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    # Keep only a safe base name: no folders, no "..", only ordinary characters.
+    """Stores the user's CV (PDF or DOCX, checked by content) and indexes its text for the agents."""
+    # Keep only a safe base name for display: no folders, no "..", only ordinary characters.
     original = os.path.basename((file.filename or "").replace("\\", "/"))
     stem = re.sub(r"[^A-Za-z0-9._ -]", "_", os.path.splitext(original)[0]).strip(" .")[:100] or "cv"
-    safe_name = f"{stem}.pdf"
-    if not original.lower().endswith(".pdf") and file.content_type != "application/pdf":
-        raise HTTPException(status_code=400, detail="Upload your CV as a PDF file.")
 
-    # Read with a size cap, and check it really is a PDF (they start with "%PDF-").
     data = await file.read(MAX_CV_BYTES + 1)
     if len(data) > MAX_CV_BYTES:
-        raise HTTPException(status_code=413, detail="That file is too large. The limit is 10 MB.")
-    if not data.startswith(b"%PDF-"):
-        raise HTTPException(status_code=400, detail="That file isn't a valid PDF.")
+        limit_mb = MAX_CV_BYTES // (1024 * 1024)
+        raise HTTPException(status_code=413, detail=f"That file is too large. The limit is {limit_mb} MB.")
+    kind = detect_kind(data)
+    if kind is None:
+        raise HTTPException(status_code=400, detail="Upload your CV as a PDF or Word (.docx) file.")
 
+    # Read the text first: a file that can't be parsed is the user's problem (400), not a server error.
     try:
-        # Create a user-specific folder: uploads/user_1/
-        user_folder = os.path.abspath(os.path.join(UPLOAD_DIR, f"user_{current_user.id}"))
-        os.makedirs(user_folder, exist_ok=True)
-        destination_path = os.path.join(user_folder, safe_name)
-        if os.path.dirname(destination_path) != user_folder:  # belt and braces against path tricks
-            raise HTTPException(status_code=400, detail="Invalid file name.")
+        chunks = chunk_text(extract_text(data, kind))
+    except Exception:
+        raise HTTPException(status_code=400, detail="We couldn't read that file. Try exporting your CV again as a PDF.") from None
+    if not chunks:
+        raise HTTPException(status_code=400, detail="That file has no readable text (is it a scanned image?).")
 
-        with open(destination_path, "wb") as buffer:
-            buffer.write(data)
+    storage = get_storage()
+    key = f"{user_prefix(current_user.id)}/cv.{kind}"
+    try:
+        storage.put(key, data, CONTENT_TYPES[kind])
+        if current_user.cv_key and current_user.cv_key != key:
+            storage.delete(current_user.cv_key)
 
-        # Update user record in database
-        current_user.cv_filename = safe_name
-        current_user.cv_filepath = destination_path
+        current_user.cv_filename = f"{stem}.{kind}"
+        current_user.cv_key = key
+        current_user.cv_uploaded_at = utcnow()
         db.commit()
 
-        # Vectorize document into ChromaDB using saved path
-        user_id_str = f"user_{current_user.id}"
-        parse_and_store_document(destination_path, user_id=user_id_str, doc_type="resume")
-
-        return {"status": "success", "message": f"Successfully stored {safe_name}"}
-
+        vector_store.replace_user_documents(current_user.id, chunks, doc_type="resume")
+        return {"status": "success", "message": f"Successfully stored {current_user.cv_filename}"}
     except HTTPException:
         raise
     except Exception:
@@ -202,6 +163,8 @@ async def start_job_search(
 ):
     """Protected: Only logged-in users can trigger the AI agents, and only in their own chat sessions."""
     session = _require_own_session(req.session_id, current_user, db)
+    session.updated_at = utcnow()
+    db.commit()
     try:
         # Auto-rename if this is a New Chat
         if session.title == "New Chat":
@@ -310,7 +273,8 @@ async def select_jobs(
     db: Session = Depends(get_db)
 ):
     """Resumes the pipeline after user selects jobs from the card UI."""
-    _require_own_session(req.session_id, current_user, db)
+    _require_own_session(req.session_id, current_user, db).updated_at = utcnow()
+    db.commit()
     try:
         config = {"configurable": {"thread_id": req.session_id}}
         
@@ -457,7 +421,7 @@ MIN_PASSWORD_LEN = 8
 @app.post("/api/signup")
 async def signup(user: UserAuthRequest, request: Request, db: Session = Depends(get_db)):
     """Registers a new user in the database with a hashed password."""
-    signup_ip_limiter.check(_client_ip(request))
+    limits.rate_limit(db, f"signup:ip:{_client_ip(request)}", config.SIGNUP_PER_IP_PER_HOUR, limits.HOUR)
 
     username = user.username.strip()
     if not USERNAME_RE.match(username):
@@ -489,8 +453,8 @@ async def signup(user: UserAuthRequest, request: Request, db: Session = Depends(
 @app.post("/api/login")
 async def login(user: UserAuthRequest, request: Request, db: Session = Depends(get_db)):
     """Authenticates a user and returns a JWT access token."""
-    login_ip_limiter.check(_client_ip(request))
-    login_user_limiter.check(user.username.strip().lower())
+    limits.rate_limit(db, f"login:ip:{_client_ip(request)}", config.LOGIN_PER_IP_PER_MINUTE, limits.MINUTE)
+    limits.rate_limit(db, f"login:user:{user.username.strip().lower()}", config.LOGIN_PER_USER_PER_5_MIN, 5 * limits.MINUTE)
     user.username = user.username.strip()
 
     # 1. Find the user in the database
@@ -531,14 +495,22 @@ async def login(user: UserAuthRequest, request: Request, db: Session = Depends(g
 
 @app.get("/api/user/cv")
 async def get_user_cv(current_user: models.User = Depends(get_current_user)):
-    """Returns the user's stored CV file directly."""
-    if not current_user.cv_filepath or not os.path.exists(current_user.cv_filepath):
+    """The signed-in user's own CV: a short-lived signed link for bucket storage, else the file itself."""
+    if not current_user.cv_key:
         raise HTTPException(status_code=404, detail="No CV found for this user.")
-        
-    return FileResponse(
-        path=current_user.cv_filepath, 
-        filename=current_user.cv_filename,
-        media_type="application/pdf"
+    storage = get_storage()
+    filename = current_user.cv_filename or os.path.basename(current_user.cv_key)
+    url = storage.signed_url(current_user.cv_key, filename)
+    if url:
+        return RedirectResponse(url, status_code=307)
+    data = storage.get(current_user.cv_key)
+    if data is None:
+        raise HTTPException(status_code=404, detail="No CV found for this user.")
+    kind = current_user.cv_key.rsplit(".", 1)[-1]
+    return Response(
+        content=data,
+        media_type=CONTENT_TYPES.get(kind, "application/octet-stream"),
+        headers={"Content-Disposition": f'inline; filename="{filename}"', "Cache-Control": "no-store"},
     )
 
 @app.delete("/api/applications/{app_id}")
@@ -658,21 +630,13 @@ async def delete_cv(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    if current_user.cv_filepath and os.path.exists(current_user.cv_filepath):
-        try:
-            os.remove(current_user.cv_filepath)
-        except OSError:
-            pass
-    
+    if current_user.cv_key:
+        get_storage().delete(current_user.cv_key)
     current_user.cv_filename = None
-    current_user.cv_filepath = None
+    current_user.cv_key = None
+    current_user.cv_uploaded_at = None
     db.commit()
-
-    user_id_str = f"user_{current_user.id}"
-    results = vector_store.collection.get(where={"user_id": user_id_str})
-    if results and results.get('ids'):
-        vector_store.collection.delete(ids=results['ids'])
-
+    vector_store.delete_user_documents(current_user.id)
     return {"status": "success", "message": "CV deleted"}
 
 

@@ -1,4 +1,6 @@
--r requirements.txt
+-r requirements-automation.txt
 pytest==9.2.0
 ruff==0.17.4
 mypy==2.4.1
+# Embedded Postgres 16 + pgvector for running the tests against Postgres without Docker (TEST_POSTGRES=1)
+pgserver==0.1.4

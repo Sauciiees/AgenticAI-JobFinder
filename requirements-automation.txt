@@ -1,0 +1,5 @@
+# Extra dependencies for real browser automation (your own local Docker build only):
+# Playwright job-board searches, sign-in windows and auto-apply.
+-r requirements.txt
+playwright==1.63.0
+pillow==12.3.0

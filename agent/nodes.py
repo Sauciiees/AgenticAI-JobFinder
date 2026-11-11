@@ -1,12 +1,11 @@
 import json
-import os
 
 from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.types import interrupt
 
+from agent import vector_store
 from agent.state import State
-from agent.vector_store import vector_store
 from tools import ALL_TOOLS
 
 # Initialize Gemini models (using a stable model version)
@@ -77,13 +76,8 @@ def general_chat_node(state: State):
   structured_profile = state.get("structured_profile", {})
   user_name = structured_profile.get("full_name", "there")
   
-  # Fetch the user's uploaded CV from the vector database
-  from agent.vector_store import vector_store
-  vector_results = vector_store.collection.get(
-      where={"user_id": user_id}
-  )
-  # collection.get() returns a flat list of chunk strings (unlike .query(), which nests one list per query)
-  retrieved_chunks = vector_results.get("documents") or []
+  # The user's whole uploaded CV, in order
+  retrieved_chunks = vector_store.get_user_documents(user_id)
   actual_user_profile = "\n".join(retrieved_chunks) if retrieved_chunks else "No resume documents uploaded yet."
 
   prompt = f"""You are an expert Career Advisor and AI Assistant called "JobFinder AI". 
@@ -238,15 +232,7 @@ def matching_screening_agent(state: State):
   raw_jobs = state.get('selected_jobs', []) or state.get('raw_jobs', [])
   
   profile_query = "education background skills work experience projects"
-  query_vector = vector_store.embeddings.embed_query(profile_query)
-  
-  vector_results = vector_store.collection.query(
-      query_embeddings=[query_vector],
-      n_results=4,
-      where={"user_id": user_id}
-  )
-  
-  retrieved_chunks = vector_results.get("documents", [[]])[0]
+  retrieved_chunks = vector_store.search_user_documents(user_id, profile_query, k=4)
   actual_user_profile = "\n".join(retrieved_chunks) if retrieved_chunks else f"No resume documents uploaded yet for user {user_id}."
 
   university = structured_profile.get('university') or "Not specified"
@@ -325,18 +311,9 @@ def asset_tailoring_agent(state: State):
       else "No specific job evaluation found."
   )
 
-  # 2. Embed the query and filter ChromaDB by user_id
-  query = "Python PyTorch LangChain Azure Docker Data Science AI projects experience"
-  query_vector = vector_store.embeddings.embed_query(query)
-  
-  # We query the collection directly to pass the 'where' metadata filter
-  vector_results = vector_store.collection.query(
-      query_embeddings=[query_vector],
-      n_results=4,
-      where={"user_id": user_id}  # THE MAGIC FILTER!
-  )
-
-  retrieved_chunks = vector_results.get("documents", [[]])[0]
+  # 2. The user's CV chunks most relevant to the jobs being applied for
+  job_titles = ", ".join(str(j.get("title", "")) for j in scored_jobs) or "skills projects experience"
+  retrieved_chunks = vector_store.search_user_documents(user_id, f"{job_titles} skills projects experience", k=4)
   user_background_context = (
       "\n".join(retrieved_chunks)
       if retrieved_chunks
@@ -408,6 +385,17 @@ def human_approval_node(state: State):
       )]
   }
 
+def _local_cv_path(user_id: str) -> str | None:
+  from database import SessionLocal
+  from models import User
+  from storage import get_storage
+
+  with SessionLocal() as db:
+      user = db.get(User, vector_store.to_user_id(user_id))
+      key = user.cv_key if user else None
+  return get_storage().local_copy(key) if key else None
+
+
 def auto_apply_node(state: State):
   """Stage 4.5: Auto-Apply Agent.
 
@@ -426,14 +414,8 @@ def auto_apply_node(state: State):
           "application_results": [],
       }
   
-  # Find user's CV file path
-  cv_filepath = ""
-  user_uploads_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads", user_id)
-  if os.path.exists(user_uploads_dir):
-      for f in os.listdir(user_uploads_dir):
-          if f.endswith(".pdf"):
-              cv_filepath = os.path.join(user_uploads_dir, f).replace("\\", "/")
-              break
+  # The user's CV as a local file the browser can upload (downloaded first if it's in a bucket)
+  cv_filepath = _local_cv_path(user_id) or ""
   
   print(f"Auto-Apply: Starting for {len(scored_jobs)} job(s)...")
   if cv_filepath:
