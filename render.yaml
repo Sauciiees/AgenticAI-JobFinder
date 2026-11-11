@@ -23,8 +23,8 @@ services:
         sync: false
       - key: GOOGLE_API_KEY
         sync: false
-      - key: SERPER_API_KEY
-        sync: false
+      # Optional: add SERPER_API_KEY in the dashboard to also search JobsDB, Indeed and JobBKK.
+      # Without it the demo searches LinkedIn only.
       - key: JWT_SECRET_KEY
         generateValue: true
       # Copy this value into the Cloudflare Pages project as PROXY_SHARED_SECRET.

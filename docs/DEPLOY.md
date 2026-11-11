@@ -9,8 +9,8 @@ Pages (it needs the Render URL), then the scheduled cleanup on GitHub.
 ## 0. Keys you already have
 
 - **Gemini**: https://aistudio.google.com/apikey → `GOOGLE_API_KEY` **(save)**
-- **Serper**: https://serper.dev → API key → `SERPER_API_KEY` **(save)**.
-  The key currently in your `.env` is rejected by Serper (`403 Unauthorized`), so make a new one.
+- **Serper** (optional): https://serper.dev → API key → `SERPER_API_KEY`. Without it the demo
+  searches LinkedIn only; add it later on Render (Environment) to include JobsDB, Indeed and JobBKK.
 
 ## 1. Database: Neon Postgres
 
@@ -45,7 +45,7 @@ Save the **site key** → `TURNSTILE_SITE_KEY` and **secret key** → `TURNSTILE
 1. Push this repository to GitHub. Render deploys the branch named in `render.yaml`
    (`branch: chore/phase-1-cleanup`); change it there if you deploy from another branch.
 2. https://render.com → **New** → **Blueprint** → pick the repository. Render reads `render.yaml`.
-3. Fill in the values it asks for: `DATABASE_URL`, `GOOGLE_API_KEY`, `SERPER_API_KEY`, the four
+3. Fill in the values it asks for: `DATABASE_URL`, `GOOGLE_API_KEY` (your Gemini key), the four
    `S3_*` values, `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY`. Leave `SENTRY_*` and
    `DEMO_VIDEO_URL` empty for now if you don't have them.
 4. After the first deploy: service → **Environment**, copy the generated `PROXY_SHARED_SECRET` and
@@ -95,7 +95,7 @@ Add your Pages URL and the auto-apply video link at the top of `README.md`, and 
 ## Checklist after deploying
 
 - [ ] `https://<project>.pages.dev` loads, "Try it as a guest" works
-- [ ] A search returns jobs from LinkedIn **and** at least one Serper board (JobsDB, Indeed, JobBKK)
+- [ ] A search returns LinkedIn jobs (and JobsDB/Indeed/JobBKK too if you added a Serper key)
 - [ ] Sign-up shows the Turnstile check
 - [ ] `<render-url>/api/config` returns 404 (direct calls blocked)
 - [ ] The cleanup workflow run succeeds
