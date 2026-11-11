@@ -13,11 +13,11 @@ Sign-in state is kept in browser_profile/user_<id>/job_boards.json:
 For boards whose session cookie we don't check, the user confirms the sign-in instead.
 """
 
-import os
 import json
-import time
+import os
 import threading
-from datetime import datetime, timezone
+import time
+from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 PROFILE_ROOT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "browser_profile")
@@ -106,7 +106,7 @@ def set_signed_in(user_key: str, board: str, signed_in: bool, verified: bool = F
     state[board] = {
         "signed_in": bool(signed_in),
         "verified": bool(verified),
-        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
     }
     with open(_state_path(user_key), "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)

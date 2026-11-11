@@ -12,13 +12,9 @@ Architecture (pure vision: nothing is injected into the page):
 Runs in headless=False mode so the user can intervene for CAPTCHAs.
 """
 
-import os
 import json
-import time
+import os
 import re
-from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
-
 
 # --- Constants ---
 MAX_ACTIONS = 30
@@ -507,7 +503,7 @@ def _apply_each(jobs, user_profile, cv_filepath, on_job_status_update, user_key)
         if on_job_status_update:
             on_job_status_update(i, title, "Starting application...")
         
-        def status_callback(step, desc):
+        def status_callback(step, desc, i=i, title=title):
             if on_job_status_update:
                 on_job_status_update(i, title, desc)
         

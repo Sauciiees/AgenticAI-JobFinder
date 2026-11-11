@@ -1,18 +1,22 @@
+import os
+import sqlite3
+
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.graph import END, START, StateGraph
+from langgraph.prebuilt import ToolNode
+
 from agent.nodes import (
-    application_tracker_node,
-    asset_tailoring_agent,
-    auto_apply_node,
-    conversational_router,
-    general_chat_node,
-    human_approval_node,
-    job_search_agent,
-    job_selection_node,
-    matching_screening_agent,
+  application_tracker_node,
+  asset_tailoring_agent,
+  auto_apply_node,
+  conversational_router,
+  general_chat_node,
+  human_approval_node,
+  job_search_agent,
+  job_selection_node,
+  matching_screening_agent,
 )
 from agent.state import State
-from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph import END, START, StateGraph
-from langgraph.prebuilt import ToolNode, tools_condition
 from tools import ALL_TOOLS
 
 
@@ -66,12 +70,8 @@ workflow.add_edge("auto_apply_node", "application_tracker_node")
 workflow.add_edge("application_tracker_node", END)
 
 # 6. Compile graph with checkpointer
-import sqlite3
-from langgraph.checkpoint.sqlite import SqliteSaver
-
 # Create or connect to the checkpoint database. It lives in data/ beside jobfinder.db, so a local run
 # and the Docker container (which mounts data/) share the same chat history.
-import os
 os.makedirs("data", exist_ok=True)
 conn = sqlite3.connect(os.getenv("CHECKPOINT_DB", "data/checkpoints.sqlite"), check_same_thread=False)
 memory = SqliteSaver(conn)

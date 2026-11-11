@@ -1,0 +1,46 @@
+[project]
+name = "agentic-ai-job-finder"
+version = "1.0.0"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::sqlalchemy.exc.MovedIn20Warning",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["scratch", "vector_db", "browser_profile", "data", "uploads", "screenshots"]
+
+[tool.ruff.lint]
+# E/F: real errors; I: import order; B: likely bugs; UP: modern syntax.
+select = ["E", "F", "I", "B", "UP"]
+ignore = [
+    "E501",  # long lines: handled by the formatter where it can be
+    "B008",  # FastAPI's Depends()/File() in defaults is the intended pattern
+]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = true
+# Report errors only for the files listed below; imported modules are type-checked silently.
+follow_imports = "silent"
+# Files that pass today. Add each file here once it is cleaned up, e.g. server.py and models.py
+# after the move to SQLAlchemy 2.0 Mapped[] models (Phase 2), and the browser-automation tools
+# after the public/admin split (Phase 3). Never remove a file from this list to make CI pass.
+files = [
+    "auth.py",
+    "database.py",
+    "models.py",
+    "agent",
+    "tools/__init__.py",
+    "tools/job_tools.py",
+    "tools/scraper.py",
+    "tools/browser_profile.py",
+    "tools/jobsdb_search.py",
+]

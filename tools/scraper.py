@@ -1,7 +1,8 @@
-from bs4 import BeautifulSoup
 import re
-import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import requests
+from bs4 import BeautifulSoup
 
 
 def scrape_job_description(url: str) -> str:
@@ -30,8 +31,9 @@ def _enrich_single_job(job):
         return job
         
     try:
-        from playwright.sync_api import sync_playwright
         import json
+
+        from playwright.sync_api import sync_playwright
         
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -55,7 +57,8 @@ def _enrich_single_job(job):
             ld_scripts = soup.find_all("script", type="application/ld+json")
             for script in ld_scripts:
                 try:
-                    if not script.string: continue
+                    if not script.string:
+                        continue
                     data = json.loads(script.string)
                     if isinstance(data, list):
                         for item in data:

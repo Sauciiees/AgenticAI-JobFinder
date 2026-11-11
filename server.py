@@ -1,36 +1,31 @@
+import json
 import os
 import re
-import time
 import threading
+import time
 import traceback
+import uuid
 from collections import defaultdict, deque
-from typing import Dict, Any, Optional
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request
-from pydantic import BaseModel
-from dotenv import load_dotenv
-from langgraph.types import Command
-import models
-from fastapi import Depends
-from sqlalchemy.orm import Session
-from database import engine, get_db
-from fastapi import HTTPException, Depends, status
-from sqlalchemy.orm import Session
-from auth import get_password_hash, verify_password, create_access_token,get_current_user
-import models
-from database import get_db
-from fastapi.staticfiles import StaticFiles
-import shutil
-from fastapi.responses import FileResponse
-import json
 
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from langgraph.types import Command
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+import models
+from auth import create_access_token, get_current_user, get_password_hash, verify_password
+from database import engine, get_db
 
 load_dotenv()
 models.Base.metadata.create_all(bind=engine)
 
-from agent.graph import app as langgraph_app
-from tools import job_boards
-from agent.parser import parse_and_store_document
-from agent.vector_store import vector_store
+from agent.graph import app as langgraph_app  # noqa: E402  (needs .env loaded first)
+from agent.parser import parse_and_store_document  # noqa: E402  (needs .env loaded first)
+from agent.vector_store import vector_store  # noqa: E402  (needs .env loaded first)
+from tools import job_boards  # noqa: E402  (needs .env loaded first)
 
 app = FastAPI(title="Agentic AI Job Finder API", version="1.0")
 
@@ -65,7 +60,7 @@ class _RateLimiter:
 
     def __init__(self, max_hits: int, window_seconds: int):
         self.max_hits, self.window = max_hits, window_seconds
-        self.hits: Dict[str, deque] = defaultdict(deque)
+        self.hits: dict[str, deque] = defaultdict(deque)
         self.lock = threading.Lock()
 
     def check(self, key: str) -> None:
@@ -116,27 +111,27 @@ class JobSelectionRequest(BaseModel):
 class ResumeSessionRequest(BaseModel):
     session_id: str
     feedback: str = "approve"
-    job_title: Optional[str] = None
-    company: Optional[str] = None
-    jobs: Optional[list] = None
+    job_title: str | None = None
+    company: str | None = None
+    jobs: list | None = None
 
 class StatusUpdateRequest(BaseModel):
     status: str
 
 class ProfileUpdateRequest(BaseModel):
-    full_name: Optional[str] = None
-    email: Optional[str] = None
-    phone: Optional[str] = None
-    university: Optional[str] = None
-    degree: Optional[str] = None
-    gpa: Optional[float] = None
-    graduation_year: Optional[int] = None
-    skills: Optional[str] = None
-    work_experience: Optional[str] = None
-    linkedin_url: Optional[str] = None
-    github_url: Optional[str] = None
-    preferred_job_titles: Optional[str] = None
-    preferred_locations: Optional[str] = None
+    full_name: str | None = None
+    email: str | None = None
+    phone: str | None = None
+    university: str | None = None
+    degree: str | None = None
+    gpa: float | None = None
+    graduation_year: int | None = None
+    skills: str | None = None
+    work_experience: str | None = None
+    linkedin_url: str | None = None
+    github_url: str | None = None
+    preferred_job_titles: str | None = None
+    preferred_locations: str | None = None
 
 class ChatSessionResponse(BaseModel):
     session_id: str
@@ -195,7 +190,7 @@ async def upload_resume(
     except HTTPException:
         raise
     except Exception:
-        raise _server_error("UPLOAD")
+        raise _server_error("UPLOAD") from None
 
 
 # 2. Update start route to inject user_id into the LangGraph state
@@ -210,8 +205,9 @@ async def start_job_search(
     try:
         # Auto-rename if this is a New Chat
         if session.title == "New Chat":
-            from agent.nodes import llm
             from langchain_core.messages import HumanMessage
+
+            from agent.nodes import llm
             try:
                 # Ask LLM for a very short title
                 prompt = f"Generate a short title (max 4 words) for this chat based on the user's first message. Message: '{req.query}'. Output ONLY the title, nothing else."
@@ -219,7 +215,7 @@ async def start_job_search(
                 new_title = title_res.content.strip().replace('"', '')
                 session.title = new_title
                 db.commit()
-            except Exception as e:
+            except Exception:
                 # Fallback to truncating
                 session.title = req.query[:30] + ("..." if len(req.query) > 30 else "")
                 db.commit()
@@ -258,7 +254,7 @@ async def start_job_search(
         }
 
         # Run until the first interrupt
-        for event in langgraph_app.stream(initial_state, config, stream_mode="values"):
+        for _event in langgraph_app.stream(initial_state, config, stream_mode="values"):
             pass
 
         # Check graph state
@@ -305,7 +301,7 @@ async def start_job_search(
         return {"status": "completed", "values": state_snapshot.values}
 
     except Exception:
-        raise _server_error("START")
+        raise _server_error("START") from None
 
 @app.post("/api/job-finder/select-jobs")
 async def select_jobs(
@@ -319,7 +315,7 @@ async def select_jobs(
         config = {"configurable": {"thread_id": req.session_id}}
         
         # Resume with the selected job indices
-        for event in langgraph_app.stream(
+        for _event in langgraph_app.stream(
             Command(resume=req.selected_indices), config, stream_mode="values"
         ):
             pass
@@ -353,7 +349,7 @@ async def select_jobs(
         return {"status": "completed", "values": state_snapshot.values}
 
     except Exception:
-        raise _server_error("SELECT-JOBS")
+        raise _server_error("SELECT-JOBS") from None
 
 @app.post("/api/job-finder/resume")
 async def resume_job_search(
@@ -378,7 +374,7 @@ async def resume_job_search(
 
     try:
         # 1. Resume the agent with the user's approval
-        for event in langgraph_app.stream(Command(resume=req.feedback), config, stream_mode="values"):
+        for _event in langgraph_app.stream(Command(resume=req.feedback), config, stream_mode="values"):
             pass
             
         # 2. Get the final assets the AI generated
@@ -445,7 +441,7 @@ async def resume_job_search(
 
     except Exception:
         db.rollback()
-        raise _server_error("RESUME")
+        raise _server_error("RESUME") from None
 
 # (The old unauthenticated GET /api/applications/{user_id} was removed: it let anyone read any
 #  user's applications. Use the signed-in GET /api/applications below.)
@@ -588,7 +584,7 @@ async def get_user_applications(
             })
         return results
     except Exception:
-        raise _server_error("APPLICATIONS")
+        raise _server_error("APPLICATIONS") from None
 
 @app.put("/api/applications/{app_id}/status")
 async def update_application_status(
@@ -679,7 +675,6 @@ async def delete_cv(
 
     return {"status": "success", "message": "CV deleted"}
 
-import uuid
 
 @app.get("/api/chat-sessions", response_model=list[ChatSessionResponse])
 def get_sessions(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -800,11 +795,11 @@ def sign_in_job_board(board: str, current_user: models.User = Depends(get_curren
     try:
         result = job_boards.open_sign_in_window(f"user_{current_user.id}", board)
     except RuntimeError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
     except Exception:
         err = _server_error("JOB-BOARD SIGN-IN")
         err.detail = "Couldn't open the browser window. Please try again."
-        raise err
+        raise err from None
     return result
 
 @app.post("/api/job-boards/{board}/confirm")

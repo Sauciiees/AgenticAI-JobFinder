@@ -1,19 +1,18 @@
+import json
 import os
-from agent import state
-from agent.state import State
-from langchain_core.messages import HumanMessage, SystemMessage
+
+from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
-from tools import ALL_TOOLS
 from langgraph.types import interrupt
-from agent.vector_store import index_and_search_jobs
+
+from agent.state import State
 from agent.vector_store import vector_store
-from langchain_core.output_parsers import StrOutputParser
+from tools import ALL_TOOLS
 
 # Initialize Gemini models (using a stable model version)
 llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite", temperature=0.2)
 llm_with_tools = llm.bind_tools(ALL_TOOLS)
 
-import json
 
 def extract_text_from_response(content):
     if isinstance(content, list):
@@ -116,7 +115,6 @@ Recent conversation:
 
 def job_search_agent(state: State):
   """Stage 1: Job Discovery Agent — fetches ALL jobs from 4 platforms with time filter."""
-  user_id = state.get("user_id", "anonymous")
   structured_profile = state.get('structured_profile', {})
   time_filter = state.get("time_filter", "qdr:w")  # Default: past week
   # Get the LATEST message from the user
@@ -159,10 +157,10 @@ def job_search_agent(state: State):
       search_keyword = preferred_titles
       search_location = preferred_locations
 
-  from tools.linkedin_search import linkedin_direct_search
-  from tools.jobsdb_search import jobsdb_direct_search
   from tools.indeed_search import indeed_direct_search
   from tools.jobbkk_search import jobbkk_direct_search
+  from tools.jobsdb_search import jobsdb_direct_search
+  from tools.linkedin_search import linkedin_direct_search
 
   all_jobs = []
 
@@ -256,7 +254,6 @@ def matching_screening_agent(state: State):
   gpa = structured_profile.get('gpa') or "Not specified"
   skills = structured_profile.get('skills') or "Not specified"
 
-  from tools.scraper import scrape_job_description
 
   # Try to extract the full Job Description by scraping the URL for the selected jobs
   # (No longer needed here since job_search_agent now async scrapes ALL jobs upfront)
@@ -304,7 +301,7 @@ def matching_screening_agent(state: State):
                   sj["link"] = orig.get("link", "")
                   break
                   
-  except Exception as e:
+  except Exception:
       scored_jobs = [{"title": "Parse Error", "company": "Unknown", "match_score": "0", "details": str(content_text)}]
 
   return {
@@ -446,6 +443,7 @@ def auto_apply_node(state: State):
   
   # Run the auto-apply agent in a thread to avoid asyncio conflicts
   from concurrent.futures import ThreadPoolExecutor
+
   from tools.auto_apply_agent import auto_apply_to_jobs
   
   def run_apply():
@@ -525,7 +523,7 @@ def application_tracker_node(state: State):
   tracker_file = f"tracker_{user_id}.json"
   try:
     try:
-      with open(tracker_file, "r", encoding="utf-8") as f:
+      with open(tracker_file, encoding="utf-8") as f:
         history = json.load(f)
     except FileNotFoundError:
       history = []

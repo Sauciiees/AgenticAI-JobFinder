@@ -1,24 +1,27 @@
 import os
+from datetime import UTC, datetime, timedelta
+
 import jwt
-from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.orm import Session
 from jwt.exceptions import InvalidTokenError
-from database import get_db
+from passlib.context import CryptContext
+from sqlalchemy.orm import Session
+
 import models
+from database import get_db
 
 # Security settings
 # The signing secret lives in .env (server.py imports this module before it loads .env, so load it here).
 load_dotenv()
-SECRET_KEY = os.getenv("JWT_SECRET_KEY")
-if not SECRET_KEY or len(SECRET_KEY) < 32:
+_secret = os.getenv("JWT_SECRET_KEY")
+if not _secret or len(_secret) < 32:
     raise RuntimeError(
         "JWT_SECRET_KEY is missing or too short in .env. Generate one with: "
         'python -c "import secrets; print(secrets.token_urlsafe(48))"'
     )
+SECRET_KEY: str = _secret
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 1440  # 24 hours
 
@@ -33,7 +36,7 @@ def get_password_hash(password):
 
 def create_access_token(data: dict):
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    expire = datetime.now(UTC) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
@@ -46,12 +49,12 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id_str: str = payload.get("sub")
-        if user_id_str is None:
+        user_id_str = payload.get("sub")
+        if not isinstance(user_id_str, str):
             raise credentials_exception
         token_user_id = int(user_id_str)
-    except InvalidTokenError:
-        raise credentials_exception
+    except (InvalidTokenError, ValueError):
+        raise credentials_exception from None
         
     user = db.query(models.User).filter(models.User.id == token_user_id).first()
     if user is None:

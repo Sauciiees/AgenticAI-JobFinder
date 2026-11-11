@@ -1,6 +1,8 @@
 import os
-from agent.vector_store import vector_store
+
 from pypdf import PdfReader
+
+from agent.vector_store import vector_store
 
 
 def parse_and_store_document(file_path: str, user_id: str, doc_type: str = "resume"):

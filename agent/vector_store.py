@@ -1,4 +1,3 @@
-import os
 from chromadb import PersistentClient
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 

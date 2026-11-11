@@ -3,7 +3,7 @@ from langgraph.types import Command
 
 load_dotenv()
 
-from agent.graph import app
+from agent.graph import app  # noqa: E402  (needs .env loaded first)
 
 if __name__ == "__main__":
   config = {"configurable": {"thread_id": "job_finder_session_1"}}
@@ -36,7 +36,7 @@ if __name__ == "__main__":
   print("--- Running Multi-Agent Pipeline (With HITL) ---")
 
   # 1. Run until the first interrupt
-  for event in app.stream(initial_state, config, stream_mode="values"):
+  for _event in app.stream(initial_state, config, stream_mode="values"):
     pass
 
   # 2. Check if interrupted
@@ -50,7 +50,7 @@ if __name__ == "__main__":
     print("\n--- Resuming Pipeline with User Input ---")
 
     # 3. Resume execution by passing the feedback using Command(resume=...)
-    for event in app.stream(Command(resume=feedback), config, stream_mode="values"):
+    for _event in app.stream(Command(resume=feedback), config, stream_mode="values"):
       pass
 
     print("\n Pipeline execution completed successfully!")

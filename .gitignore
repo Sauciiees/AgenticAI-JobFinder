@@ -15,3 +15,11 @@ browser_profile/
 screenshots/
 checkpoints.sqlite*
 tracker_user_*.json
+
+# One-off debug scripts (kept locally, not in git)
+scratch/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/

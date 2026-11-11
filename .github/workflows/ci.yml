@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Lint, type-check, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Tests never call real services; these only satisfy startup checks.
+      JWT_SECRET_KEY: ci-only-secret-key-that-is-at-least-32-characters
+      GOOGLE_API_KEY: ci-fake-google-key
+      SERPER_API_KEY: ci-fake-serper-key
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Ruff (lint)
+        run: ruff check --output-format=github .
+
+      - name: Mypy (types)
+        run: mypy
+
+      - name: Pytest
+        run: pytest -q

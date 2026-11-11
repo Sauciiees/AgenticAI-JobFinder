@@ -1,8 +1,8 @@
+import os
+
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-
-import os
 
 # Store SQLite database in a data/ directory for Docker volume compatibility
 os.makedirs("data", exist_ok=True)

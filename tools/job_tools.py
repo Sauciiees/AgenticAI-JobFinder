@@ -1,6 +1,11 @@
 import os
+from typing import Any
+
 import requests
 from langchain_core.tools import tool
+
+# Without a timeout a stalled Serper call would hang the request (and a server worker) forever.
+SERPER_TIMEOUT_SECONDS = 15
 
 
 def _serper_search_structured(keyword: str, location: str, site: str, platform_name: str, time_filter: str = "qdr:w", num: int = 10) -> list:
@@ -11,11 +16,11 @@ def _serper_search_structured(keyword: str, location: str, site: str, platform_n
 
   query = f"site:{site} {keyword} {location}"
   url = "https://google.serper.dev/search"
-  payload = {"q": query, "num": num, "tbs": time_filter}
+  payload: dict[str, Any] = {"q": query, "num": num, "tbs": time_filter}
   headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
 
   try:
-    response = requests.post(url, json=payload, headers=headers)
+    response = requests.post(url, json=payload, headers=headers, timeout=SERPER_TIMEOUT_SECONDS)
     response.raise_for_status()
     data = response.json()
 
@@ -96,8 +101,8 @@ def _clean_title_and_company(title: str, snippet: str):
       company = parts[-1].strip()
       
   # Clean up any leftover punctuation
-  clean_title = clean_title.rstrip(" ...").rstrip("-").strip()
-  company = company.rstrip(" ...").rstrip("-").strip()
+  clean_title = clean_title.rstrip(" .").rstrip("-").strip()
+  company = company.rstrip(" .").rstrip("-").strip()
   
   # If company wasn't found in title, try to guess from snippet
   if company == "Unknown Company" and snippet:

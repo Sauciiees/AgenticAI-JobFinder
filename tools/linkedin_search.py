@@ -1,6 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 
+
 def linkedin_direct_search(keyword: str, location: str, time_filter: str = "qdr:w", num: int = 10) -> list:
     """Directly scrapes LinkedIn guest search page for perfect job data."""
     # Convert Google time_filter to LinkedIn time_filter
@@ -86,7 +87,6 @@ def linkedin_direct_search(keyword: str, location: str, time_filter: str = "qdr:
     return jobs
 
 if __name__ == "__main__":
-    import json
     res = linkedin_direct_search("AI Engineer", "Bangkok")
     print(f"Found {len(res)} jobs.")
     for j in res[:5]:
