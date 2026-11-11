@@ -223,7 +223,7 @@
     btn.disabled = true;
     try {
       if (authMode === "signup") {
-        if (pass.value.length < 6) return authError("Use at least 6 characters for the password.", pass);
+        if (pass.value.length < 8) return authError("Use at least 8 characters for the password.", pass);
         if (pass.value !== confirm.value) return authError("The passwords don't match.", confirm);
         await api("POST", "/api/signup", { username, password: pass.value });
       }

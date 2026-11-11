@@ -1,7 +1,11 @@
 import os
+import re
+import time
+import threading
 import traceback
+from collections import defaultdict, deque
 from typing import Dict, Any, Optional
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
+from fastapi import FastAPI, UploadFile, File, HTTPException, Form, Request
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from langgraph.types import Command
@@ -30,12 +34,63 @@ from agent.vector_store import vector_store
 
 app = FastAPI(title="Agentic AI Job Finder API", version="1.0")
 
-# 1. Define base uploads directory
+# Uploaded CVs live here. They are NOT served as static files: a user gets their own CV only
+# through the signed-in /api/user/cv endpoint.
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-# 2. Mount static files so files can be accessed via URL (e.g. http://localhost:8000/uploads/...)
-app.mount("/uploads", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+MAX_CV_BYTES = 10 * 1024 * 1024  # 10 MB
+
+
+def _server_error(context: str) -> HTTPException:
+    """Logs the full traceback on the server and returns a generic 500, so internals never reach the browser."""
+    print(f"{context} ERROR:\n" + traceback.format_exc().encode("ascii", "ignore").decode("ascii"))
+    return HTTPException(status_code=500, detail="Something went wrong on the server. Please try again.")
+
+
+def _require_own_session(session_id: str, user: models.User, db: Session) -> models.ChatSession:
+    """The agent's state is keyed by session_id, so only the session's owner may start or resume it."""
+    session = db.query(models.ChatSession).filter(
+        models.ChatSession.session_id == session_id,
+        models.ChatSession.user_id == user.id,
+    ).first()
+    if not session:
+        raise HTTPException(status_code=404, detail="Chat session not found")
+    return session
+
+
+class _RateLimiter:
+    """In-memory sliding-window limiter (per process). Behind a reverse proxy, configure uvicorn's
+    --proxy-headers / --forwarded-allow-ips so request.client.host is the real client address."""
+
+    def __init__(self, max_hits: int, window_seconds: int):
+        self.max_hits, self.window = max_hits, window_seconds
+        self.hits: Dict[str, deque] = defaultdict(deque)
+        self.lock = threading.Lock()
+
+    def check(self, key: str) -> None:
+        now = time.monotonic()
+        with self.lock:
+            q = self.hits[key]
+            while q and now - q[0] > self.window:
+                q.popleft()
+            if len(q) >= self.max_hits:
+                retry = int(self.window - (now - q[0])) + 1
+                raise HTTPException(
+                    status_code=429,
+                    detail=f"Too many attempts. Try again in {retry} seconds.",
+                    headers={"Retry-After": str(retry)},
+                )
+            q.append(now)
+
+
+login_ip_limiter = _RateLimiter(max_hits=20, window_seconds=300)       # 20 tries / 5 min per IP
+login_user_limiter = _RateLimiter(max_hits=8, window_seconds=300)      # 8 tries / 5 min per username
+signup_ip_limiter = _RateLimiter(max_hits=5, window_seconds=3600)      # 5 accounts / hour per IP
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
 
 @app.get("/api/health")
 async def health():
@@ -101,35 +156,46 @@ async def upload_resume(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    # Keep only a safe base name: no folders, no "..", only ordinary characters.
+    original = os.path.basename((file.filename or "").replace("\\", "/"))
+    stem = re.sub(r"[^A-Za-z0-9._ -]", "_", os.path.splitext(original)[0]).strip(" .")[:100] or "cv"
+    safe_name = f"{stem}.pdf"
+    if not original.lower().endswith(".pdf") and file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="Upload your CV as a PDF file.")
+
+    # Read with a size cap, and check it really is a PDF (they start with "%PDF-").
+    data = await file.read(MAX_CV_BYTES + 1)
+    if len(data) > MAX_CV_BYTES:
+        raise HTTPException(status_code=413, detail="That file is too large. The limit is 10 MB.")
+    if not data.startswith(b"%PDF-"):
+        raise HTTPException(status_code=400, detail="That file isn't a valid PDF.")
+
     try:
         # Create a user-specific folder: uploads/user_1/
-        user_folder = os.path.join(UPLOAD_DIR, f"user_{current_user.id}")
+        user_folder = os.path.abspath(os.path.join(UPLOAD_DIR, f"user_{current_user.id}"))
         os.makedirs(user_folder, exist_ok=True)
-        
-        destination_path = os.path.join(user_folder, file.filename)
-        
-        # Save file directly to server disk
+        destination_path = os.path.join(user_folder, safe_name)
+        if os.path.dirname(destination_path) != user_folder:  # belt and braces against path tricks
+            raise HTTPException(status_code=400, detail="Invalid file name.")
+
         with open(destination_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-            
+            buffer.write(data)
+
         # Update user record in database
-        current_user.cv_filename = file.filename
+        current_user.cv_filename = safe_name
         current_user.cv_filepath = destination_path
         db.commit()
 
         # Vectorize document into ChromaDB using saved path
         user_id_str = f"user_{current_user.id}"
         parse_and_store_document(destination_path, user_id=user_id_str, doc_type="resume")
-        
-        return {
-            "status": "success", 
-            "message": f"Successfully stored {file.filename}",
-            "filepath": destination_path
-        }
-        
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+
+        return {"status": "success", "message": f"Successfully stored {safe_name}"}
+
+    except HTTPException:
+        raise
+    except Exception:
+        raise _server_error("UPLOAD")
 
 
 # 2. Update start route to inject user_id into the LangGraph state
@@ -139,11 +205,11 @@ async def start_job_search(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """Protected: Only logged-in users can trigger the AI agents."""
+    """Protected: Only logged-in users can trigger the AI agents, and only in their own chat sessions."""
+    session = _require_own_session(req.session_id, current_user, db)
     try:
         # Auto-rename if this is a New Chat
-        session = db.query(models.ChatSession).filter(models.ChatSession.session_id == req.session_id).first()
-        if session and session.title == "New Chat":
+        if session.title == "New Chat":
             from agent.nodes import llm
             from langchain_core.messages import HumanMessage
             try:
@@ -238,18 +304,17 @@ async def start_job_search(
         
         return {"status": "completed", "values": state_snapshot.values}
 
-    except Exception as e:
-        import traceback
-        error_detail = traceback.format_exc()
-        print("SERVER ERROR:\n", error_detail)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise _server_error("START")
 
 @app.post("/api/job-finder/select-jobs")
 async def select_jobs(
     req: JobSelectionRequest,
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
     """Resumes the pipeline after user selects jobs from the card UI."""
+    _require_own_session(req.session_id, current_user, db)
     try:
         config = {"configurable": {"thread_id": req.session_id}}
         
@@ -287,11 +352,8 @@ async def select_jobs(
         
         return {"status": "completed", "values": state_snapshot.values}
 
-    except Exception as e:
-        import traceback
-        error_detail = traceback.format_exc().encode('ascii', 'ignore').decode('ascii')
-        print("SELECT-JOBS ERROR:\n", error_detail)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise _server_error("SELECT-JOBS")
 
 @app.post("/api/job-finder/resume")
 async def resume_job_search(
@@ -300,6 +362,7 @@ async def resume_job_search(
     db: Session = Depends(get_db)  # <-- INJECT DATABASE SESSION
 ):
     """Resumes the paused LangGraph agent and SAVES the result to SQLite."""
+    _require_own_session(req.session_id, current_user, db)
     config = {"configurable": {"thread_id": req.session_id}}
 
     # 0. The agent never logs in: the user must have signed in to each job board themselves first.
@@ -380,28 +443,37 @@ async def resume_job_search(
         
         return {"status": "completed", "message": "Applications logged successfully!"}
 
-    except Exception as e:
+    except Exception:
         db.rollback()
-        import traceback
-        err_msg = traceback.format_exc().encode('ascii', 'ignore').decode('ascii')
-        print("RESUME ERROR:\n", err_msg)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _server_error("RESUME")
 
-@app.get("/api/applications/{user_id}")
-async def get_user_applications(user_id: int, db: Session = Depends(get_db)):
-    """Fetch applications for a specific user directly from SQLite."""
-    user_apps = db.query(models.Application).filter(models.Application.user_id == user_id).all()
-    return user_apps
+# (The old unauthenticated GET /api/applications/{user_id} was removed: it let anyone read any
+#  user's applications. Use the signed-in GET /api/applications below.)
 
 # Pydantic model for incoming auth requests
 class UserAuthRequest(BaseModel):
     username: str
     password: str
 
+USERNAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{3,64}$")
+MIN_PASSWORD_LEN = 8
+
 @app.post("/api/signup")
-async def signup(user: UserAuthRequest, db: Session = Depends(get_db)):
+async def signup(user: UserAuthRequest, request: Request, db: Session = Depends(get_db)):
     """Registers a new user in the database with a hashed password."""
-    
+    signup_ip_limiter.check(_client_ip(request))
+
+    username = user.username.strip()
+    if not USERNAME_RE.match(username):
+        raise HTTPException(status_code=400, detail="Usernames are 3-64 characters: letters, numbers and . _ @ -")
+    if len(user.password) < MIN_PASSWORD_LEN:
+        raise HTTPException(status_code=400, detail=f"Use at least {MIN_PASSWORD_LEN} characters for the password.")
+    if len(user.password.encode("utf-8")) > 72:  # bcrypt only uses the first 72 bytes
+        raise HTTPException(status_code=400, detail="That password is too long (72 bytes at most).")
+    if user.password.lower() == username.lower():
+        raise HTTPException(status_code=400, detail="The password can't be the same as the username.")
+    user.username = username
+
     # 1. Check if the username already exists
     existing_user = db.query(models.User).filter(models.User.username == user.username).first()
     if existing_user:
@@ -419,9 +491,12 @@ async def signup(user: UserAuthRequest, db: Session = Depends(get_db)):
 
 
 @app.post("/api/login")
-async def login(user: UserAuthRequest, db: Session = Depends(get_db)):
+async def login(user: UserAuthRequest, request: Request, db: Session = Depends(get_db)):
     """Authenticates a user and returns a JWT access token."""
-    
+    login_ip_limiter.check(_client_ip(request))
+    login_user_limiter.check(user.username.strip().lower())
+    user.username = user.username.strip()
+
     # 1. Find the user in the database
     db_user = db.query(models.User).filter(models.User.username == user.username).first()
     
@@ -512,8 +587,8 @@ async def get_user_applications(
                 "assets_preview": app.assets_preview
             })
         return results
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise _server_error("APPLICATIONS")
 
 @app.put("/api/applications/{app_id}/status")
 async def update_application_status(
@@ -726,9 +801,10 @@ def sign_in_job_board(board: str, current_user: models.User = Depends(get_curren
         result = job_boards.open_sign_in_window(f"user_{current_user.id}", board)
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Couldn't open the browser: {e}")
+    except Exception:
+        err = _server_error("JOB-BOARD SIGN-IN")
+        err.detail = "Couldn't open the browser window. Please try again."
+        raise err
     return result
 
 @app.post("/api/job-boards/{board}/confirm")
