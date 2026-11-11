@@ -32,23 +32,31 @@ Render deploys the `chore/phase-1-cleanup` branch, and only after CI passes. If 
 `autoDeployTrigger` is unknown, delete that line from `render.yaml`, then pick *Settings → Build &
 Deploy → Auto-Deploy → After CI Checks Pass* in the dashboard.
 
-## 3. Web page: Cloudflare Pages
+## 3. Web page: Cloudflare (Worker)
+
+Cloudflare now creates a **Worker** when you connect a repository (the page shows *Version ID*,
+*Traffic %* and *Edit code*). The repository is set up for that: `wrangler.jsonc` serves
+`frontend/` and `worker/index.js` forwards `/api/*` to Render.
 
 1. Sign up at https://dash.cloudflare.com.
-2. **Workers & Pages** → **Create** → **Pages** tab → **Connect to Git** → choose the repository.
-3. Settings:
-   - **Project name:** this becomes your address, `https://<name>.pages.dev`
-   - **Production branch:** `chore/phase-1-cleanup`
-   - **Framework preset:** None
-   - **Build command:** leave empty
-   - **Build output directory:** `frontend`
-4. **Environment variables** → add two:
+2. **Workers & Pages** → **Create** → **Import a repository** → choose the repository.
+   - **Project name:** `angentical-jobfinder`. It must match `"name"` in `wrangler.jsonc`;
+     change that line if you pick another name.
+   - **Build command:** leave empty. **Deploy command:** `npx wrangler deploy` (the default).
+3. Worker → **Settings** → **Build** → **Branch control**: set the production branch to
+   `chore/phase-1-cleanup`.
+4. Worker → **Settings** → **Variables and Secrets** → **Add**, type **Secret**, for both:
    - `API_ORIGIN` = your Render URL (no `/` at the end)
    - `PROXY_SHARED_SECRET` = the value from Render
-5. **Save and Deploy**, then open `https://<name>.pages.dev`. The first visit may show "Waking up
-   the server" for up to a minute.
+5. Push any commit (or retry the latest build) so it deploys. Your address is under **Settings →
+   Domains & Routes**, ending in `.workers.dev`. The first visit may show "Waking up the server"
+   for up to a minute.
 
-**That's the demo online.** Share the `pages.dev` link.
+*Classic Cloudflare Pages also works* (the repository keeps `functions/api/` for it): production
+branch `chore/phase-1-cleanup`, no build command, output directory `frontend`, and the same two
+variables.
+
+**That's the demo online.** Share the `workers.dev` (or `pages.dev`) link.
 
 ## Optional extras (add any time on Render → Environment; it redeploys by itself)
 

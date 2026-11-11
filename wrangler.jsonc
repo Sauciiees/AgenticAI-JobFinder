@@ -1,0 +1,21 @@
+// Cloudflare Worker for the web app: serves frontend/ as static files and forwards /api/* to the
+// API on Render (worker/index.js). Deployed by Cloudflare Workers Builds on every push.
+//
+// Worker settings > Variables and Secrets (add both as type "Secret"):
+//   API_ORIGIN           e.g. https://jobfinder-api.onrender.com  (no trailing slash)
+//   PROXY_SHARED_SECRET  the same value as on Render
+{
+  // Must match the Worker's name in the Cloudflare dashboard.
+  "name": "angentical-jobfinder",
+  "main": "worker/index.js",
+  "compatibility_date": "2025-09-01",
+  "assets": {
+    "directory": "./frontend",
+    "binding": "ASSETS",
+    // Only /api/* runs the Worker code; everything else is served straight from frontend/.
+    "run_worker_first": ["/api/*"]
+  },
+  // Keep variables set in the dashboard when deploying.
+  "keep_vars": true,
+  "observability": { "enabled": true }
+}
