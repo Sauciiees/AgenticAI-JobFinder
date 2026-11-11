@@ -2,7 +2,7 @@ import secrets
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, LargeBinary, String, Text
 from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
@@ -111,6 +111,17 @@ class Document(Base):
     chunk_index: Mapped[int] = mapped_column(Integer)
     content: Mapped[str] = mapped_column(Text)
     embedding: Mapped[list[float] | None] = mapped_column(EmbeddingType, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class StoredFile(Base):
+    """An uploaded file kept in the database (STORAGE_BACKEND=database)."""
+
+    __tablename__ = "stored_files"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)  # e.g. "user_7/cv.pdf"
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+    content_type: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

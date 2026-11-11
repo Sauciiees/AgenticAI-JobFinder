@@ -46,7 +46,7 @@ flowchart LR
     Browser -->|HTTPS, one site| Pages[Cloudflare Pages<br/>static web app]
     Pages -->|/api/* via Pages Function<br/>+ shared secret| API[FastAPI on Render<br/>slim image, free tier]
     API --> PG[(Neon Postgres<br/>users, chats, pgvector,<br/>LangGraph checkpoints)]
-    API --> R2[(Private bucket<br/>CVs, signed links)]
+    PG -.- CV[(CVs in Postgres<br/>or a private bucket)]
     API --> Gemini[Gemini API]
     API --> Serper[Serper search]
     GH[GitHub Actions] -->|CI on every PR| API
@@ -58,10 +58,10 @@ flowchart LR
 |---|---|
 | Auth | bcrypt passwords, JWT in an `httpOnly`, `Secure`, `SameSite=Strict` cookie, CSRF double-submit, per-user token key (logout signs out everywhere) |
 | Abuse | Cloudflare Turnstile on sign-up and guests; rate limits and daily quotas counted in Postgres (10 agent runs per user, 60 overall, Serper budget) |
-| Privacy | CVs in a private bucket behind short-lived signed links; guests deleted after 24 h, CVs and idle chats after 30 days; one-click account deletion |
+| Privacy | CVs stored privately (in Postgres, or a private bucket with short-lived signed links), never as public files; guests deleted after 24 h, CVs and idle chats after 30 days; one-click account deletion |
 | Hardening | The API only answers requests from the proxy; CSP and security headers; uploads checked by content (PDF/DOCX), size-capped, parsed before storing |
 | Reliability | Alembic migrations run before each start; deploys only after CI passes; Sentry on both ends; "waking up" screen for the free tier's cold start |
-| Cost | $0: Render, Neon, R2, Pages, Turnstile, Sentry free tiers. The API uses about 150 MB of Render's 512 MB |
+| Cost | $0: Render, Neon and Cloudflare Pages free tiers (Turnstile, Sentry optional). The API uses about 150 MB of Render's 512 MB |
 
 **Two builds from one codebase.** `ENABLE_BROWSER_AUTOMATION` switches between:
 

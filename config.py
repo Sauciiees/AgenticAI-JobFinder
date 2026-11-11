@@ -46,8 +46,8 @@ CHECKPOINT_DB = os.getenv("CHECKPOINT_DB", "data/checkpoints.sqlite")
 # Off for the public demo, which has no browser; on for your own local Docker build.
 ENABLE_BROWSER_AUTOMATION = _bool("ENABLE_BROWSER_AUTOMATION", False)
 
-# CV storage: "local" keeps files under UPLOAD_DIR; "s3" uses any S3-compatible bucket
-# (Cloudflare R2, Supabase Storage, AWS S3).
+# CV storage: "local" keeps files under UPLOAD_DIR; "database" keeps them in the database (the free
+# demo on Neon); "s3" uses any S3-compatible bucket (Cloudflare R2, Supabase Storage, AWS S3).
 STORAGE_BACKEND = os.getenv("STORAGE_BACKEND", "local").strip().lower()
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "uploads")
 S3_BUCKET = os.getenv("S3_BUCKET", "")

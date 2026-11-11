@@ -84,3 +84,33 @@ def test_local_storage_roundtrip_and_prefix_delete(tmp_path):
     assert st.get("user_1/cv.pdf") == b"data"
     st.delete_prefix("user_1")
     assert st.get("user_1/cv.pdf") is None
+
+
+def test_database_storage_roundtrip_and_prefix_delete():
+    from storage import DatabaseStorage
+
+    st = DatabaseStorage()
+    st.put("user_901/cv.pdf", b"%PDF-1 first", "application/pdf")
+    st.put("user_901/cv.pdf", b"%PDF-1 second", "application/pdf")  # overwrite
+    st.put("user_9011/cv.pdf", b"other user", "application/pdf")
+    assert st.get("user_901/cv.pdf") == b"%PDF-1 second"
+    st.delete_prefix("user_901")
+    assert st.get("user_901/cv.pdf") is None
+    assert st.get("user_9011/cv.pdf") == b"other user"  # a longer id with the same start survives
+    st.delete("user_9011/cv.pdf")
+    assert st.get("user_9011/cv.pdf") is None
+
+
+def test_upload_and_download_with_database_storage(client, make_user, monkeypatch):
+    import config
+    import storage
+    from tests.test_upload import MINIMAL_PDF
+
+    monkeypatch.setattr(config, "STORAGE_BACKEND", "database")
+    monkeypatch.setattr(storage, "_storage", None)
+    _, _, headers = make_user()
+    res = client.post("/api/upload-resume", files={"file": ("cv.pdf", MINIMAL_PDF, "application/pdf")}, headers=headers)
+    assert res.status_code == 200, res.text
+    res = client.get("/api/user/cv", headers=headers)
+    assert res.status_code == 200 and res.content == MINIMAL_PDF
+    monkeypatch.setattr(storage, "_storage", None)

@@ -1,6 +1,7 @@
 """Where uploaded CVs live.
 
-LocalStorage keeps files in a folder (local runs, tests). S3Storage uses any S3-compatible private
+LocalStorage keeps files in a folder (local runs, tests). DatabaseStorage keeps them in the
+database itself (the free demo on Neon: no extra account). S3Storage uses any S3-compatible private
 bucket: Cloudflare R2, Supabase Storage (S3 endpoint) or AWS S3. Keys look like "user_7/cv.pdf".
 """
 
@@ -125,13 +126,72 @@ class S3Storage:
         return path
 
 
+class DatabaseStorage:
+    """Files as rows in the stored_files table. The API streams them to their owner itself."""
+
+    def put(self, key: str, data: bytes, content_type: str) -> None:
+        from database import SessionLocal, utcnow
+        from models import StoredFile
+
+        with SessionLocal() as db:
+            db.merge(StoredFile(key=_check_key(key), content=data, content_type=content_type, created_at=utcnow()))
+            db.commit()
+
+    def get(self, key: str) -> bytes | None:
+        from database import SessionLocal
+        from models import StoredFile
+
+        with SessionLocal() as db:
+            row = db.get(StoredFile, _check_key(key))
+            return bytes(row.content) if row else None
+
+    def delete(self, key: str) -> None:
+        from sqlalchemy import delete as sql_delete
+
+        from database import SessionLocal
+        from models import StoredFile
+
+        with SessionLocal() as db:
+            db.execute(sql_delete(StoredFile).where(StoredFile.key == _check_key(key)))
+            db.commit()
+
+    def delete_prefix(self, prefix: str) -> None:
+        from sqlalchemy import delete as sql_delete
+
+        from database import SessionLocal
+        from models import StoredFile
+
+        prefix = _check_key(prefix.rstrip("/")) + "/"
+        with SessionLocal() as db:
+            # The prefix is "user_<id>/", which has no LIKE wildcards in it.
+            db.execute(sql_delete(StoredFile).where(StoredFile.key.startswith(prefix, autoescape=True)))
+            db.commit()
+
+    def signed_url(self, key: str, filename: str) -> str | None:
+        return None  # served through the signed-in /api/user/cv endpoint
+
+    def local_copy(self, key: str) -> str | None:
+        data = self.get(key)
+        if data is None:
+            return None
+        fd, path = tempfile.mkstemp(suffix=os.path.splitext(key)[1])
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        return path
+
+
 _storage: Storage | None = None
 
 
 def get_storage() -> Storage:
     global _storage
     if _storage is None:
-        _storage = S3Storage() if config.STORAGE_BACKEND == "s3" else LocalStorage(config.UPLOAD_DIR)
+        if config.STORAGE_BACKEND == "s3":
+            _storage = S3Storage()
+        elif config.STORAGE_BACKEND == "database":
+            _storage = DatabaseStorage()
+        else:
+            _storage = LocalStorage(config.UPLOAD_DIR)
     return _storage
 
 
