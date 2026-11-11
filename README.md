@@ -1,12 +1,12 @@
 # Job Finder: an agentic AI job search assistant
 
-[![CI](https://github.com/Sauciiees/AngenticAI-JobFinder/actions/workflows/ci.yml/badge.svg?branch=chore/phase-1-cleanup)](https://github.com/Sauciiees/AngenticAI-JobFinder/actions/workflows/ci.yml?query=branch%3Achore/phase-1-cleanup)
+[![CI](https://github.com/Sauciiees/AgenticAI-JobFinder/actions/workflows/ci.yml/badge.svg?branch=chore/phase-1-cleanup)](https://github.com/Sauciiees/AgenticAI-JobFinder/actions/workflows/ci.yml?query=branch%3Achore/phase-1-cleanup)
 
 A multi-agent assistant that searches Thai job boards, scores each role against your CV, drafts a
 tailored cover letter and resume bullets, and (on its owner's machine) applies in a real browser.
 Built with **LangGraph**, **Gemini**, **FastAPI** and **Postgres + pgvector**.
 
-**Live demo:** _add your Cloudflare Pages URL here_. Click **Try it as a guest** for a ready-made
+**Live demo:** https://agenticai-jobfinder.saucesage009.workers.dev. Click **Try it as a guest** for a ready-made
 account with a sample CV. **Auto-apply video:** _add your video link here_.
 
 | Sign in or try as a guest | Live jobs from the boards |

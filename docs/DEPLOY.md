@@ -15,7 +15,7 @@ The app creates its tables, turns on pgvector, and stores uploaded CVs in this d
 ## 2. API: Render
 
 1. Sign up at https://render.com with your GitHub account, and allow it to see the
-   `AngenticAI-JobFinder` repository.
+   `AgenticAI-JobFinder` repository.
 2. **New +** → **Blueprint** → choose the repository → **Connect**.
 3. Render reads `render.yaml` and asks for two values:
    - `DATABASE_URL`: the Neon line from step 1
@@ -40,7 +40,7 @@ Cloudflare now creates a **Worker** when you connect a repository (the page show
 
 1. Sign up at https://dash.cloudflare.com.
 2. **Workers & Pages** → **Create** → **Import a repository** → choose the repository.
-   - **Project name:** `angenticai-jobfinder`. It must match `"name"` in `wrangler.jsonc`;
+   - **Project name:** `agenticai-jobfinder`. It must match `"name"` in `wrangler.jsonc`;
      change that line if you pick another name.
    - **Build command:** leave empty. **Deploy command:** `npx wrangler deploy` (the default).
 3. Worker → **Settings** → **Build** → **Branch control**: set the production branch to
