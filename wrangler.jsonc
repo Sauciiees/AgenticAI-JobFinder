@@ -6,7 +6,7 @@
 //   PROXY_SHARED_SECRET  the same value as on Render
 {
   // Must match the Worker's name in the Cloudflare dashboard.
-  "name": "angentical-jobfinder",
+  "name": "angenticai-jobfinder",
   "main": "worker/index.js",
   "compatibility_date": "2025-09-01",
   "assets": {

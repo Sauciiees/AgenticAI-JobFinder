@@ -40,7 +40,7 @@ Cloudflare now creates a **Worker** when you connect a repository (the page show
 
 1. Sign up at https://dash.cloudflare.com.
 2. **Workers & Pages** → **Create** → **Import a repository** → choose the repository.
-   - **Project name:** `angentical-jobfinder`. It must match `"name"` in `wrangler.jsonc`;
+   - **Project name:** `angenticai-jobfinder`. It must match `"name"` in `wrangler.jsonc`;
      change that line if you pick another name.
    - **Build command:** leave empty. **Deploy command:** `npx wrangler deploy` (the default).
 3. Worker → **Settings** → **Build** → **Branch control**: set the production branch to
