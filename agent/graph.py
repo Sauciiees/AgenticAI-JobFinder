@@ -10,6 +10,7 @@ from agent.nodes import (
   asset_tailoring_agent,
   auto_apply_node,
   conversational_router,
+  dry_run_apply_node,
   general_chat_node,
   human_approval_node,
   job_search_agent,
@@ -40,7 +41,8 @@ workflow.add_node("tools", ToolNode(ALL_TOOLS))
 workflow.add_node("matching_screening_agent", matching_screening_agent)
 workflow.add_node("asset_tailoring_agent", asset_tailoring_agent)
 workflow.add_node("human_approval_node", human_approval_node)
-workflow.add_node("auto_apply_node", auto_apply_node)
+# Real browser auto-apply only in the local build; the public demo runs the dry run instead.
+workflow.add_node("auto_apply_node", auto_apply_node if config.ENABLE_BROWSER_AUTOMATION else dry_run_apply_node)
 workflow.add_node("application_tracker_node", application_tracker_node)
 
 # 2. Entry point: always go to the router first

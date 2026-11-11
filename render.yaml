@@ -1,0 +1,56 @@
+# Render Blueprint for the public demo API (free tier).
+# In Render: New > Blueprint > pick this repo. Values marked sync: false are asked for once;
+# see docs/DEPLOY.md for where each one comes from.
+services:
+  - type: web
+    name: jobfinder-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./api.dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    # Deploy a commit on main only after its GitHub checks (CI) have passed.
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: ENABLE_BROWSER_AUTOMATION
+        value: "false"
+      # Neon or Supabase connection string (postgresql://...?...sslmode=require)
+      - key: DATABASE_URL
+        sync: false
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: SERPER_API_KEY
+        sync: false
+      - key: JWT_SECRET_KEY
+        generateValue: true
+      # Copy this value into the Cloudflare Pages project as PROXY_SHARED_SECRET.
+      - key: PROXY_SHARED_SECRET
+        generateValue: true
+      # Copy this value into the GitHub repository secret CLEANUP_SECRET.
+      - key: CLEANUP_SECRET
+        generateValue: true
+      # CV storage: a private S3-compatible bucket (Cloudflare R2 or Supabase Storage)
+      - key: STORAGE_BACKEND
+        value: s3
+      - key: S3_BUCKET
+        sync: false
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_ACCESS_KEY_ID
+        sync: false
+      - key: S3_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_REGION
+        value: auto
+      - key: TURNSTILE_SITE_KEY
+        sync: false
+      - key: TURNSTILE_SECRET_KEY
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+      - key: SENTRY_FRONTEND_DSN
+        sync: false
+      - key: DEMO_VIDEO_URL
+        sync: false

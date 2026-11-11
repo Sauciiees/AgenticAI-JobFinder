@@ -93,7 +93,8 @@ def client():
 
     import server
 
-    return TestClient(server.app)
+    # https so the Secure session cookies are sent back, as a browser would.
+    return TestClient(server.app, base_url="https://testserver")
 
 
 _counter = {"n": 0}
@@ -110,8 +111,12 @@ def make_user(client):
         assert res.status_code == 200, res.text
         res = client.post("/api/login", json={"username": username, "password": password})
         assert res.status_code == 200, res.text
-        token = res.json()["access_token"]
-        client.cookies.clear()  # tests authenticate explicitly with the header
+        # Tests juggle several users on one client, so they authenticate with a Bearer header
+        # rather than the (single) cookie jar. The cookie flow has its own tests.
+        client.cookies.clear()
+        from auth import create_access_token
+
+        token = create_access_token({"sub": str(res.json()["user_id"])})
         return username, password, {"Authorization": f"Bearer {token}"}
 
     return _make

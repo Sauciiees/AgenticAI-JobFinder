@@ -23,3 +23,6 @@ scratch/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+
+# Local editor / agent settings
+.claude/

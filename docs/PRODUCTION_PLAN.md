@@ -48,8 +48,8 @@ A cold start of 30–60 seconds is accepted. The frontend shows a "waking up" st
 
 1. **Clean up.** Delete the Streamlit app, move `scratch/` into `tests/`, add CI. *(done on `chore/phase-1-cleanup`)*
 2. **Data.** Postgres, Alembic, pgvector, the Postgres checkpointer, object storage, SQLAlchemy `Mapped[]` models. *(done)*
-3. **Split and deploy.** The automation flag, the slim public image, Render, the Pages proxy, cookie login.
-4. **Public safety.** Turnstile, guest accounts and the dry run, quotas, retention, headers, Sentry.
+3. **Split and deploy.** The automation flag, the slim public image, Render, the Pages proxy, cookie login. *(done)*
+4. **Public safety.** Turnstile, guest accounts and the dry run, quotas, retention, headers, Sentry. *(done)*
 5. **Polish.** Seeded data, the waking-up screen, the README with an architecture diagram, the demo video.
 
 ## Known follow-ups from Phase 1

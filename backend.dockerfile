@@ -1,8 +1,11 @@
+# Full local build with real browser automation (job-board sign-in, Playwright searches, auto-apply).
+# Run it with: docker compose up --build. The public demo uses api.dockerfile instead.
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     DISPLAY=:99 \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright \
+    ENABLE_BROWSER_AUTOMATION=true
 
 # Virtual screen for the visible browser windows, shared as a web page (noVNC),
 # and Thai fonts so job pages render readably for the vision agent.
@@ -14,8 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Copy and install requirements first to leverage Docker caching
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt \
+COPY requirements.txt requirements-automation.txt ./
+RUN pip install --no-cache-dir -r requirements-automation.txt \
     && playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 

@@ -123,21 +123,33 @@
     constructor(message, status, detail) { super(message); this.status = status; this.detail = detail; }
   }
 
+  function readCookie(name) {
+    const m = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+    return m ? decodeURIComponent(m[1]) : null;
+  }
+
+  // Paths whose 401 means "wrong credentials" or "not signed in yet", not "session expired".
+  const NO_SIGNOUT_ON_401 = ["/api/login", "/api/me", "/api/logout"];
+
   async function api(method, path, body, { form = false, query } = {}) {
     const headers = {};
-    const token = store.get("jf-token");
-    if (token) headers.Authorization = `Bearer ${token}`;
+    // The login token is an httpOnly cookie the page can't read. Requests that change something
+    // echo the readable CSRF cookie in a header, which another site can't do.
+    if (!["GET", "HEAD"].includes(method)) {
+      const csrf = readCookie("jf_csrf");
+      if (csrf) headers["X-CSRF-Token"] = csrf;
+    }
     let payload;
     if (form) payload = body;
     else if (body !== undefined) { headers["Content-Type"] = "application/json"; payload = JSON.stringify(body); }
     const url = query ? `${path}?${new URLSearchParams(query)}` : path;
     let res;
     try {
-      res = await fetch(url, { method, headers, body: payload });
+      res = await fetch(url, { method, headers, body: payload, credentials: "same-origin" });
     } catch {
       throw new ApiError("Can't reach the server. Check that the backend is running.", 0);
     }
-    if (res.status === 401 && path !== "/api/login") {
+    if (res.status === 401 && !NO_SIGNOUT_ON_401.includes(path)) {
       signOut("Your session expired. Sign in again.");
       throw new ApiError("Signed out", 401);
     }
@@ -163,7 +175,9 @@
   const STATUS_OPTIONS = ["Applied", "Interviewed", "Pending", "Rejected", "Offer"];
 
   const state = {
-    username: store.get("jf-user"),
+    username: null,
+    me: null,        // the signed-in user, from /api/me or login
+    config: {},      // from /api/config: automation, turnstile_site_key, sentry_dsn, ...
     profile: null,
     sessions: [],
     sessionsLoaded: false,
@@ -225,29 +239,80 @@
       if (authMode === "signup") {
         if (pass.value.length < 8) return authError("Use at least 8 characters for the password.", pass);
         if (pass.value !== confirm.value) return authError("The passwords don't match.", confirm);
-        await api("POST", "/api/signup", { username, password: pass.value });
+        await api("POST", "/api/signup", { username, password: pass.value, turnstile_token: turnstile.token() });
+        turnstile.reset();
       }
       const data = await api("POST", "/api/login", { username, password: pass.value });
-      store.set("jf-token", data.access_token);
-      store.set("jf-user", data.username);
-      state.username = data.username;
       pass.value = confirm.value = "";
-      startApp();
+      signedIn(data);
     } catch (e) {
+      turnstile.reset();
       authError(e.status === 401 ? "That username and password don't match." : e.message, e.status === 401 ? pass : null);
     } finally {
       btn.disabled = false;
     }
   }
 
-  function signOut(message) {
-    store.set("jf-token", null);
-    store.set("jf-user", null);
-    Object.assign(state, { username: null, profile: null, sessions: [], sessionsLoaded: false, chatId: null, history: [], pipeline: "idle", busy: null });
+  async function startGuest() {
+    const btn = $("#guest-btn");
+    btn.disabled = true;
+    $("#auth-error").hidden = true;
+    try {
+      const data = await api("POST", "/api/guest", { turnstile_token: turnstile.token() });
+      signedIn(data);
+    } catch (e) {
+      turnstile.reset();
+      authError(e.message);
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function signedIn(me) {
+    state.me = me;
+    state.username = me.username;
+    startApp();
+  }
+
+  // Cloudflare Turnstile ("I'm human" check), only when the server has a site key.
+  const turnstile = {
+    widget: null,
+    value: null,
+    token() { return this.value; },
+    reset() {
+      this.value = null;
+      if (this.widget !== null && window.turnstile) window.turnstile.reset(this.widget);
+    },
+    mount(siteKey) {
+      if (!siteKey || this.widget !== null) return;
+      const box = $("#turnstile");
+      box.hidden = false;
+      const render = () => {
+        this.widget = window.turnstile.render(box, {
+          sitekey: siteKey,
+          callback: (t) => { this.value = t; },
+          "expired-callback": () => { this.value = null; },
+        });
+      };
+      window.onTurnstileLoad = render;
+      const sc = document.createElement("script");
+      sc.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=onTurnstileLoad";
+      sc.async = true;
+      document.head.append(sc);
+    },
+  };
+
+  function signOut(message, { remote = false, notice = null } = {}) {
+    if (remote) api("POST", "/api/logout").catch(() => {});
+    Object.assign(state, { username: null, me: null, profile: null, sessions: [], sessionsLoaded: false, chatId: null, history: [], pipeline: "idle", busy: null });
     $("#shell").hidden = true;
     $("#auth").hidden = false;
     setAuthMode("signin");
     if (message) authError(message);
+    if (notice) { const ok = $("#auth-ok"); ok.textContent = notice; ok.hidden = false; }
+    $("#guest-banner").hidden = true;
+    turnstile.mount(state.config.turnstile_site_key);
+    turnstile.reset();
     if (location.hash) history.replaceState(null, "", location.pathname);
     $("#auth-user").focus();
   }
@@ -679,13 +744,17 @@
   function renderReview() {
     const jobs = state.scoredJobs;
     const n = jobs.length;
-    if (state.boards === null) loadBoards().then(() => { if (state.pipeline === "paused_for_review") renderChat({ keepScroll: true }); });
-    const missing = state.boards ? boardsMissing(jobs) : [];
-    const blocked = state.boards === null || missing.length > 0;
+    const live = !!state.config.automation;
+    if (live && state.boards === null) loadBoards().then(() => { if (state.pipeline === "paused_for_review") renderChat({ keepScroll: true }); });
+    const missing = live && state.boards ? boardsMissing(jobs) : [];
+    const blocked = live && (state.boards === null || missing.length > 0);
     return h("section", { class: "block", "aria-labelledby": "review-title" },
       h("div", { class: "block-head" },
         h("h2", { id: "review-title" }, `Review ${n} ${n === 1 ? "application" : "applications"} before I apply`),
-        h("p", null, "Check the match notes and the drafted materials. Nothing is submitted until you approve.")),
+        live
+          ? h("p", null, "Check the match notes and the drafted materials. Nothing is submitted until you approve.")
+          : h("p", null, "This demo runs auto-apply as a dry run: the agent plans each application and fills in the answers, but submits nothing.",
+              state.config.demo_video_url ? [" ", h("a", { href: state.config.demo_video_url, target: "_blank", rel: "noopener noreferrer" }, "Watch the real thing")] : null)),
       n ? h("ul", { class: "score-list" }, jobs.map((j) => h("li", { class: "score" },
         logoEl(j.logo_url, j.company),
         h("div", { class: "job-main" },
@@ -704,7 +773,7 @@
         h("span", { class: "gap" }),
         h("button", { class: "btn btn-text-only", type: "button", onclick: cancelPipeline }, "Don't apply"),
         h("button", { class: "btn btn-primary", type: "button", disabled: !!state.busy || !n || blocked, onclick: approve },
-          icon("send"), `Approve and apply${n > 1 ? ` to ${n}` : ""}`)));
+          icon(live ? "send" : "science"), live ? `Approve and apply${n > 1 ? ` to ${n}` : ""}` : "Run the dry run")));
   }
 
   function renderComposer() {
@@ -747,8 +816,10 @@
       if (!text || state.busy) return;
       send(text);
     });
+    const runs = state.me && state.me.runs_left != null
+      ? ` · ${state.me.runs_left} of ${state.me.runs_per_day} agent runs left today` : "";
     return h("div", { class: "composer-wrap" }, form,
-      h("p", { class: "disclaimer" }, "Job Finder can make mistakes. Check each listing before you apply."));
+      h("p", { class: "disclaimer", id: "disclaimer" }, `Job Finder can make mistakes. Check each listing before you apply.${runs}`));
   }
 
   function renderChat({ loading = false, keepScroll = false } = {}) {
@@ -853,6 +924,7 @@
         await refreshHistory();
       } finally {
         loadSessions(); // the backend renames a new chat after its first message, even when the agent then fails
+        refreshMe();
       }
     }, () => send(text));
   }
@@ -873,7 +945,11 @@
 
   async function approve() {
     const jobs = state.scoredJobs;
-    await runAgent(`Applying to ${jobs.length} ${jobs.length === 1 ? "job" : "jobs"}. This can take a few minutes…`, async () => {
+    const live = !!state.config.automation;
+    const label = live
+      ? `Applying to ${jobs.length} ${jobs.length === 1 ? "job" : "jobs"}. This can take a few minutes…`
+      : `Planning ${jobs.length} ${jobs.length === 1 ? "application" : "applications"} (dry run)…`;
+    await runAgent(label, async () => {
       try {
         await api("POST", "/api/job-finder/resume", { session_id: state.chatId, feedback: "approve", jobs });
       } catch (e) {
@@ -882,10 +958,11 @@
         throw e;
       }
       await refreshHistory();
-      loadBoards(); // an expired session is marked signed-out by the agent
+      if (live) loadBoards(); // an expired session is marked signed-out by the agent
       state.pipeline = "idle";
       await loadAppsCount();
-      toast(`Logged ${jobs.length} ${jobs.length === 1 ? "application" : "applications"}`);
+      refreshMe();
+      toast(live ? `Logged ${jobs.length} ${jobs.length === 1 ? "application" : "applications"}` : "Dry run finished. Nothing was submitted.");
     }, approve);
   }
 
@@ -985,8 +1062,9 @@
     v.replaceChildren(h("div", { class: "page" },
       h("header", { class: "page-head" }, h("div", null, h("h1", null, "Profile"), h("p", null, "Your agents use this to choose, score and tailor applications."))),
       renderProgress(p),
-      h("div", { class: "settings" }, renderCvSection(p), renderBoardsSection()),
-      form));
+      h("div", { class: "settings" }, renderCvSection(p), state.config.automation ? renderBoardsSection() : null),
+      form,
+      h("div", { class: "settings" }, renderDangerSection())));
   }
 
   function renderBoardsSection() {
@@ -998,6 +1076,37 @@
         h("h2", { id: "sec-boards" }, "Job board sign-in"),
         h("p", null, "Sign in once on each site you want to auto-apply on. The agent uses these sessions and never logs in for you. The window opens on the computer running Job Finder.")),
       h("div", { class: "setting-panel" }, list));
+  }
+
+  function renderDangerSection() {
+    const guest = !!state.me?.is_guest;
+    const status = h("p", { class: "hint", role: "status" });
+    const pw = guest ? null : h("input", { type: "password", id: "delete-pw", autocomplete: "current-password", "aria-describedby": "delete-hint" });
+    const btn = h("button", { class: "btn btn-danger", type: "button" }, "Delete my account");
+    btn.addEventListener("click", async () => {
+      if (pw && !pw.value) { status.textContent = "Enter your password to confirm."; pw.focus(); return; }
+      const ok = await confirmDialog("Delete your account?",
+        "Your profile, CV, chats and logged applications are deleted for good. This can't be undone.", "Delete everything");
+      if (!ok) return;
+      btn.disabled = true;
+      try {
+        await api("DELETE", "/api/account", { password: pw ? pw.value : null });
+        signOut(null, { notice: "Your account and all its data were deleted." });
+      } catch (e) {
+        status.textContent = e.message;
+        btn.disabled = false;
+      }
+    });
+    return h("section", { class: "setting", "aria-labelledby": "sec-danger" },
+      h("div", { class: "setting-label" },
+        h("h2", { id: "sec-danger" }, "Your data"),
+        h("p", null, guest
+          ? "This guest account and everything in it are deleted automatically 24 hours after you started."
+          : "CVs and chats are deleted automatically after 30 days. You can delete everything now.")),
+      h("div", { class: "setting-panel" },
+        pw ? h("div", { class: "field" }, h("label", { for: "delete-pw" }, "Password"), pw,
+          h("p", { class: "hint", id: "delete-hint" }, "Needed to confirm it's you.")) : null,
+        btn, status));
   }
 
   async function saveProfile(e) {
@@ -1047,7 +1156,7 @@
       const name = p.cv_filename;
       if (name) {
         wrap.append(h("div", { class: "cv-file" },
-          icon("picture_as_pdf"),
+          icon(/\.docx$/i.test(name) ? "article" : "picture_as_pdf"),
           h("span", { class: "name", title: name }, name),
           h("button", {
             class: "btn btn-text-only", type: "button",
@@ -1064,17 +1173,22 @@
             },
           }, "Remove")));
       }
-      const input = h("input", { type: "file", accept: "application/pdf,.pdf", id: "cv-input", "aria-describedby": "cv-hint" });
-      const status = h("p", { class: "hint", id: "cv-hint" }, "PDF only. Uploading replaces the current CV.");
+      const input = h("input", { type: "file", accept: ".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document", id: "cv-input", "aria-describedby": "cv-hint" });
+      const maxMb = state.config.max_cv_mb || 5;
+      const status = h("p", { class: "hint", id: "cv-hint" }, `PDF or Word (.docx), up to ${maxMb} MB. Uploading replaces the current CV.`);
       const drop = h("label", { class: "drop", for: "cv-input" },
         icon("upload_file"),
         h("strong", null, name ? "Upload a new CV" : "Upload your CV"),
-        h("span", null, "Drop a PDF here or click to choose one"),
+        h("span", null, "Drop a PDF or .docx here or click to choose one"),
         input);
       const upload = async (file) => {
         if (!file) return;
-        if (!/\.pdf$/i.test(file.name) && file.type !== "application/pdf") {
-          status.textContent = "That file isn't a PDF. Choose a .pdf file.";
+        if (!/\.(pdf|docx)$/i.test(file.name)) {
+          status.textContent = "Choose a PDF or Word (.docx) file.";
+          return;
+        }
+        if (file.size > maxMb * 1024 * 1024) {
+          status.textContent = `That file is larger than ${maxMb} MB.`;
           return;
         }
         drop.style.pointerEvents = "none";
@@ -1082,7 +1196,7 @@
         const fd = new FormData();
         fd.append("file", file, file.name);
         try {
-          await api("POST", "/api/upload-resume", fd, { form: true, query: { session_id: state.chatId || "profile" } });
+          await api("POST", "/api/upload-resume", fd, { form: true });
           p.cv_filename = file.name;
           draw();
           $("#progress").replaceWith(renderProgress(p));
@@ -1239,11 +1353,31 @@
   // ============================================================
   // Boot
   // ============================================================
+  async function refreshMe() {
+    try {
+      state.me = await api("GET", "/api/me");
+      const d = $("#disclaimer");
+      if (d && state.me.runs_left != null) {
+        d.textContent = `Job Finder can make mistakes. Check each listing before you apply. · ${state.me.runs_left} of ${state.me.runs_per_day} agent runs left today`;
+      }
+    } catch { /* keep what we have */ }
+  }
+
+  function renderGuestBanner() {
+    const b = $("#guest-banner");
+    if (!state.me?.is_guest) { b.hidden = true; return; }
+    b.hidden = false;
+    b.replaceChildren(icon("info"),
+      h("span", null, "You're exploring a guest demo. Everything here is deleted after 24 hours."),
+      h("button", { class: "btn-text", type: "button", onclick: () => signOut(null, { remote: true }) }, "Create your own account"));
+  }
+
   function startApp() {
     $("#auth").hidden = true;
     $("#shell").hidden = false;
     renderAvatar();
-    api("GET", "/api/config").then((c) => { state.viewerUrl = c?.browser_viewer_url || null; }).catch(() => {});
+    renderGuestBanner();
+    state.viewerUrl = state.config.browser_viewer_url || null;
     Promise.all([loadProfile(), loadSessions(), loadAppsCount()]).then(() => {
       // Redraw the greeting with the user's name once the profile is in (new chat only).
       if (route().name === "chat" && !state.chatId && !state.busy && !state.pending) renderChat();
@@ -1280,15 +1414,64 @@
     $("#rail-open").addEventListener("click", () => openRail(true));
     $("#scrim").addEventListener("click", () => openRail(false));
     document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $("#rail").classList.contains("is-open")) { openRail(false); $("#rail-open").focus(); } });
-    $("#sign-out").addEventListener("click", () => signOut());
+    $("#sign-out").addEventListener("click", () => signOut(null, { remote: true }));
+    $("#guest-btn").addEventListener("click", startGuest);
     $("#new-chat").addEventListener("click", (e) => {
       // Clicking New chat while already on a new chat should still reset it.
       if (route().name === "chat" && !route().id) { e.preventDefault(); openChat(null); if (isPhone()) openRail(false); }
     });
-    window.addEventListener("hashchange", () => { if (store.get("jf-token")) onRoute(); });
+    window.addEventListener("hashchange", () => { if (state.me) onRoute(); });
 
-    if (store.get("jf-token")) startApp();
-    else { $("#auth").hidden = false; setAuthMode("signin"); $("#auth-user").focus(); }
+    loadAndStart();
+  }
+
+  // The free API host sleeps when idle and takes up to a minute to wake. Show that instead of a blank page.
+  async function waitForServer() {
+    const wake = $("#waking");
+    const timer = setTimeout(() => { wake.hidden = false; }, 1200);
+    const started = Date.now();
+    try {
+      for (;;) {
+        try {
+          const res = await fetch("/api/health", { cache: "no-store", credentials: "same-origin" });
+          if (res.ok) return true;
+        } catch { /* not up yet */ }
+        if (Date.now() - started > 120000) return false;
+        $("#waking-elapsed").textContent = `${Math.round((Date.now() - started) / 1000)} s`;
+        await new Promise((r) => setTimeout(r, 2500));
+      }
+    } finally {
+      clearTimeout(timer);
+      wake.hidden = true;
+    }
+  }
+
+  function initSentry(dsn, environment) {
+    if (!dsn) return;
+    const sc = document.createElement("script");
+    sc.src = "https://browser.sentry-cdn.com/8.33.0/bundle.min.js";
+    sc.crossOrigin = "anonymous";
+    sc.onload = () => window.Sentry?.init({ dsn, environment, sendDefaultPii: false });
+    document.head.append(sc);
+  }
+
+  async function loadAndStart() {
+    if (!(await waitForServer())) {
+      $("#auth").hidden = false;
+      setAuthMode("signin");
+      authError("The server didn't respond. Please refresh the page in a minute.");
+      return;
+    }
+    try { state.config = (await api("GET", "/api/config")) || {}; } catch { state.config = {}; }
+    initSentry(state.config.sentry_dsn, state.config.environment);
+    try {
+      signedIn(await api("GET", "/api/me"));
+    } catch {
+      $("#auth").hidden = false;
+      setAuthMode("signin");
+      turnstile.mount(state.config.turnstile_site_key);
+      $("#auth-user").focus();
+    }
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);

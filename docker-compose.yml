@@ -11,7 +11,6 @@ services:
     volumes:
       - ./data:/app/data
       - ./uploads:/app/uploads
-      - ./vector_db:/app/vector_db
       - ./screenshots:/app/screenshots
       # Job-board sign-ins live in a Docker volume: Linux Chrome can't reuse a Windows profile
       # (and Chromium's profile lock doesn't work on Windows bind mounts).
@@ -20,6 +19,9 @@ services:
       - .env
     environment:
       - CHECKPOINT_DB=/app/data/checkpoints.sqlite
+      - ENABLE_BROWSER_AUTOMATION=true
+      # Plain http on localhost: Safari drops Secure cookies there, so turn Secure off locally.
+      - COOKIE_SECURE=false
       - BROWSER_VIEWER_URL=http://localhost:6080/vnc.html?autoconnect=1&resize=scale
     shm_size: "1gb"  # Chromium needs more shared memory than Docker's 64 MB default
     restart: unless-stopped

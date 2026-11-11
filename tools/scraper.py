@@ -119,3 +119,18 @@ def enrich_jobs_with_scraper(jobs: list) -> list:
     except Exception as e:
         print(f"Thread scrape error: {e}")
         return jobs
+
+
+def enrich_jobs_light(jobs: list, max_chars: int = 4000) -> list:
+    """Adds each job's page text as full_jd using plain HTTP (no browser), for the public demo."""
+    if not jobs:
+        return []
+
+    def enrich(job):
+        if job.get("full_jd") or not job.get("link"):
+            return job
+        text = scrape_job_description(job["link"])
+        return {**job, "full_jd": text[:max_chars]} if text else job
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        return list(executor.map(enrich, jobs))

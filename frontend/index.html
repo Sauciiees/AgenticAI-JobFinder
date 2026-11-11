@@ -11,14 +11,7 @@
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;700&display=swap">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..24,400,0..1,0&display=block">
   <link rel="stylesheet" href="/styles.css">
-  <script>
-    // Apply the saved theme before first paint so the page never flashes the wrong one.
-    try {
-      var t = localStorage.getItem("jf-theme");
-      if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
-      if (localStorage.getItem("jf-rail") === "collapsed") document.documentElement.setAttribute("data-rail", "collapsed");
-    } catch (e) {}
-  </script>
+  <script src="/boot.js"></script>
 </head>
 <body>
   <!-- Signed out -->
@@ -45,13 +38,24 @@
           <label for="auth-confirm">Confirm password</label>
           <input id="auth-confirm" name="confirm" type="password" autocomplete="new-password">
         </div>
+        <div id="turnstile" class="turnstile" hidden></div>
         <p class="form-error" id="auth-error" role="alert" hidden></p>
         <p class="form-ok" id="auth-ok" role="status" hidden></p>
         <button class="btn btn-primary btn-block" id="auth-submit" type="submit">Sign in</button>
       </form>
+      <div class="auth-or" aria-hidden="true"><span>or</span></div>
+      <button type="button" class="btn btn-outline btn-block" id="guest-btn">
+        <span class="ms" aria-hidden="true">rocket_launch</span> Try it as a guest
+      </button>
+      <p class="hint auth-guest-hint">A ready-made demo account with a sample CV. No sign-up, deleted after 24 hours.</p>
       <p class="auth-switch">
         <span id="auth-switch-text">New here?</span>
         <button type="button" class="btn-text" id="auth-switch">Create an account</button>
+      </p>
+      <p class="privacy-note">
+        <strong>Privacy.</strong> We store only what you give us: your profile, CV and chats, to run the job agents.
+        CVs and chats are deleted after 30 days, guest accounts after 24 hours, and you can delete your account at any time from your profile.
+        Your CV text is sent to Google Gemini to be analysed. We don't sell or share your data.
       </p>
     </div>
   </div>
@@ -109,6 +113,7 @@
         <span class="topbar-gap"></span>
         <a class="avatar" href="#/profile" id="avatar" aria-label="Your profile"></a>
       </header>
+      <div class="guest-banner" id="guest-banner" role="status" hidden></div>
       <main id="view" class="view" tabindex="-1"></main>
     </div>
   </div>
@@ -125,6 +130,14 @@
   </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+  <div class="waking" id="waking" role="status" aria-live="polite" hidden>
+    <div class="waking-card">
+      <span class="waking-spinner" aria-hidden="true"></span>
+      <h2>Waking up the server…</h2>
+      <p>This free demo sleeps when nobody is using it. The first visit takes up to a minute. <span id="waking-elapsed" class="num"></span></p>
+    </div>
+  </div>
 
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js" defer></script>

@@ -15,10 +15,10 @@ def test_signup_then_login_returns_token(client):
     res = client.post("/api/login", json={"username": "alice_auth", "password": "a-long-password"})
     assert res.status_code == 200
     body = res.json()
-    assert body["token_type"] == "bearer"
-    payload = jwt.decode(body["access_token"], auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
+    assert "access_token" not in body and "hashed_password" not in body
+    token = res.cookies.get("jf_session")
+    payload = jwt.decode(token, auth.SECRET_KEY, algorithms=[auth.ALGORITHM])
     assert payload["sub"] == str(body["user_id"])
-    assert "hashed_password" not in body
 
 
 def test_duplicate_username_rejected(client):

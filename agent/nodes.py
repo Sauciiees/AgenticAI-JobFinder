@@ -1,9 +1,10 @@
 import json
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.types import interrupt
 
+import config
 from agent import vector_store
 from agent.state import State
 from tools import ALL_TOOLS
@@ -151,6 +152,27 @@ def job_search_agent(state: State):
       search_keyword = preferred_titles
       search_location = preferred_locations
 
+  if config.ENABLE_BROWSER_AUTOMATION:
+      all_jobs = _browser_job_search(search_keyword, search_location, time_filter)
+  else:
+      # Public demo: no browser in the container. LinkedIn's public page plus Serper, and the
+      # job pages fetched over plain HTTP.
+      from tools.job_tools import public_job_search
+      from tools.scraper import enrich_jobs_light
+
+      all_jobs = enrich_jobs_light(public_job_search(search_keyword, search_location, time_filter))
+
+  safe_kw = search_keyword.encode('ascii', 'ignore').decode('ascii')
+  print(f"Total jobs found for '{safe_kw}': {len(all_jobs)}")
+
+  return {
+      "messages": [HumanMessage(content=f"Found {len(all_jobs)} jobs for '{search_keyword}' across LinkedIn, Indeed, JobsDB, and JobBKK.")],
+      "raw_jobs": all_jobs,
+  }
+
+
+def _browser_job_search(search_keyword: str, search_location: str, time_filter: str) -> list:
+  """Full local build: Playwright-driven searches on each board, then pages scraped in a browser."""
   from tools.indeed_search import indeed_direct_search
   from tools.jobbkk_search import jobbkk_direct_search
   from tools.jobsdb_search import jobsdb_direct_search
@@ -189,14 +211,7 @@ def job_search_agent(state: State):
   from tools.scraper import enrich_jobs_with_scraper
   print("Enriching jobs with async scraper...")
   all_jobs = enrich_jobs_with_scraper(all_jobs)
-  
-  safe_kw = search_keyword.encode('ascii', 'ignore').decode('ascii')
-  print(f"Total jobs found for '{safe_kw}': {len(all_jobs)}")
-
-  return {
-      "messages": [HumanMessage(content=f"Found {len(all_jobs)} jobs for '{search_keyword}' across LinkedIn, Indeed, JobsDB, and JobBKK.")],
-      "raw_jobs": all_jobs,
-  }
+  return all_jobs
 
 
 def job_selection_node(state: State):
@@ -473,59 +488,69 @@ def auto_apply_node(state: State):
       "application_results": clean_results,
   }
 
-def application_tracker_node(state: State):
-  """Stage 5: Application Tracker Agent.
+def dry_run_apply_node(state: State):
+  """Public demo stand-in for auto-apply: no browser, nothing is submitted.
 
-  Logs approved applications and assets into a local tracking history file.
+  For each approved job the agent drafts the answers it would type into the application form and
+  the steps it would take, ending with "Submit skipped (demo)".
   """
-  import json
-  from datetime import datetime
-  user_id = state.get("user_id", "anonymous")
+  scored_jobs = [j for j in state.get("scored_jobs", []) if j.get("title") != "Parse Error"]
+  structured_profile = state.get("structured_profile", {})
+  if not scored_jobs:
+      return {"messages": [AIMessage(content="There were no jobs to run the dry run on.")],
+              "application_results": []}
 
-  # Safely extract raw assets from state
-  raw_assets = state.get("tailored_assets", {}).get(
-      "top_job_assets", "No assets generated."
-  )
+  cv_text = "\n".join(vector_store.get_user_documents(state.get("user_id", "anonymous"))[:12])
+  jobs_brief = [{"title": j.get("title"), "company": j.get("company"), "link": j.get("link")} for j in scored_jobs]
+  prompt = f"""
+    You are an auto-apply agent running in DRY-RUN mode: you plan the application but never submit it.
 
-  # Normalize assets into a plain string regardless of whether it's a list or str
-  if isinstance(raw_assets, list):
-    assets_str = " ".join(
-        item.get("text", str(item)) if isinstance(item, dict) else str(item)
-        for item in raw_assets
-    )
-  else:
-    assets_str = str(raw_assets)
+    Candidate profile: {json.dumps(structured_profile, ensure_ascii=False)}
+    Candidate CV: {cv_text or "Not uploaded."}
+    Jobs: {json.dumps(jobs_brief, ensure_ascii=False)}
 
-  log_entry = {
-      "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-      "status": "APPROVED",
-      "assets_preview": assets_str[:200] + "...",  # Safe string slice
-  }
+    For EACH job return an object with:
+    - "title", "company": copied from Jobs
+    - "answers": an object of 4 to 6 typical application-form questions for this role mapped to the
+      answers you would fill in from the candidate's data (name, email, phone, years of experience,
+      expected salary range, a 2-sentence "why this role")
+    - "steps": 4 to 6 short strings describing what you'd do in the browser (open the posting,
+      click Apply, upload the CV, fill each field...). The last step must be "Submit skipped (demo)".
 
-  tracker_file = f"tracker_{user_id}.json"
+    Respond with ONLY a JSON array, no markdown.
+  """
+  response = llm.invoke([HumanMessage(content=prompt)])
+  text = extract_text_from_response(response.content).strip()
   try:
-    try:
-      with open(tracker_file, encoding="utf-8") as f:
-        history = json.load(f)
-    except FileNotFoundError:
-      history = []
+      start_i, end_i = text.find("["), text.rfind("]")
+      plans = json.loads(text[start_i:end_i + 1])
+      if not isinstance(plans, list):
+          raise ValueError("not a list")
+  except Exception:
+      plans = [{"title": j.get("title"), "company": j.get("company"), "answers": {},
+                "steps": ["Open the job posting", "Fill in the application from your profile",
+                          "Submit skipped (demo)"]}
+               for j in scored_jobs]
 
-    history.append(log_entry)
+  lines = ["**Dry run finished. Nothing was submitted.** Here's what the auto-apply agent would have done:"]
+  results = []
+  for job, plan in zip(scored_jobs, plans, strict=False):
+      lines.append(f"\n### {job.get('title', 'Role')} at {job.get('company', 'Company')}")
+      for i, step in enumerate(plan.get("steps") or [], start=1):
+          lines.append(f"{i}. {step}")
+      answers = plan.get("answers") or {}
+      if isinstance(answers, dict) and answers:
+          lines.append("\n| Form field | Answer |\n|---|---|")
+          for q, a in answers.items():
+              lines.append(f"| {str(q).replace('|', '/')} | {str(a).replace('|', '/')} |")
+      results.append({"title": job.get("title", "Unknown"), "company": job.get("company", "Unknown"),
+                      "link": job.get("link", ""), "success": False, "final_status": "dry_run",
+                      "steps_taken": len(plan.get("steps") or []), "action_log": plan.get("steps") or []})
+  lines.append("\nIn the full version this runs in a real browser on the owner's machine.")
+  return {"messages": [AIMessage(content="\n".join(lines))], "application_results": results}
 
-    with open(tracker_file, "w", encoding="utf-8") as f:
-      json.dump(history, f, indent=2, ensure_ascii=False)
 
-    print("\n" + "=" * 30)
-    print(" STAGE 5: Application successfully logged to tracker!")
-    print(f"Saved to: {tracker_file}")
-    print("=" * 30)
-
-  except Exception as e:
-    print(f"Warning: Could not save to tracker file: {e}")
-
-  return {
-      "messages": [(
-          "system",
-          "Application approved and successfully logged by Tracker Agent.",
-      )]
-  }
+def application_tracker_node(state: State):
+  """Stage 5: Application Tracker. The applications themselves are saved to the database by the
+  /api/job-finder/resume endpoint, so this node only closes the run."""
+  return {"messages": [("system", "Application run finished and logged.")]}

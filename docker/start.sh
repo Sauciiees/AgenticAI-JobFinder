@@ -19,5 +19,6 @@ fi
 # 3. noVNC: the screen as a web page on port 6080 (docker-compose publishes it on 127.0.0.1 only)
 websockify --web /usr/share/novnc 6080 localhost:5900 >/dev/null 2>&1 &
 
-# 4. The app
+# 4. Bring the database schema up to date (backs up the SQLite file first), then the app
+python db_migrate.py
 exec uvicorn server:app --host 0.0.0.0 --port 8000

@@ -13,6 +13,9 @@ def _serper_search_structured(keyword: str, location: str, site: str, platform_n
   api_key = os.getenv("SERPER_API_KEY")
   if not api_key:
     return []
+  if not _serper_budget_available():
+    print(f"Serper daily budget used up; skipping {platform_name}.")
+    return []
 
   query = f"site:{site} {keyword} {location}"
   url = "https://google.serper.dev/search"
@@ -59,6 +62,43 @@ def _serper_search_structured(keyword: str, location: str, site: str, platform_n
   except Exception as e:
     print(f"Serper API error for {platform_name}: {str(e)}")
     return []
+
+
+def _serper_budget_available() -> bool:
+  """Counts one Serper call against the shared daily budget (free tier: 2,500 a month)."""
+  import config
+  import limits
+  from database import SessionLocal
+
+  with SessionLocal() as db:
+    return limits.consume(db, "serper:global", limits.DAY) <= config.GLOBAL_DAILY_SERPER_CALLS
+
+
+# Serper "site:" filters for boards searched without a browser (the public demo).
+SERPER_BOARDS = [
+    ("JobsDB", "th.jobsdb.com/job"),
+    ("Indeed", "indeed.com/viewjob"),
+    ("JobBKK", "jobbkk.com/jobs/detail"),
+]
+
+
+def public_job_search(keyword: str, location: str, time_filter: str = "qdr:w") -> list:
+  """Job search without a browser: LinkedIn's public search page plus Serper for the other boards."""
+  from concurrent.futures import ThreadPoolExecutor
+
+  from tools.linkedin_search import linkedin_direct_search
+
+  with ThreadPoolExecutor(max_workers=1 + len(SERPER_BOARDS)) as pool:
+    linkedin = pool.submit(linkedin_direct_search, keyword, location, time_filter, 10)
+    others = [pool.submit(_serper_search_structured, keyword, location, site, name, time_filter, 5)
+              for name, site in SERPER_BOARDS]
+    jobs: list = []
+    for future in [linkedin, *others]:
+      try:
+        jobs.extend(future.result())
+      except Exception as e:
+        print(f"Job search source failed: {e}")
+  return jobs
 
 
 def _clean_title_and_company(title: str, snippet: str):

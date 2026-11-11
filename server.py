@@ -1,26 +1,38 @@
+import hmac
 import json
 import os
 import re
 import traceback
 import uuid
+from typing import Any
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile, status
-from fastapi.responses import RedirectResponse, Response
+import httpx
+import sentry_sdk
+from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, status
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 import config  # noqa: I001  (loads .env before anything reads settings)
+import demo
 import limits
 import models
+import retention
 from agent import vector_store
 from agent.graph import app as langgraph_app
 from agent.parser import CONTENT_TYPES, chunk_text, detect_kind, extract_text
-from auth import create_access_token, get_current_user, get_password_hash, verify_password
+from auth import clear_login_cookies, get_current_user, get_password_hash, set_login_cookies, verify_password_or_dummy
 from database import get_db, utcnow
 from storage import get_storage, user_prefix
 from tools import job_boards
+
+if config.SENTRY_DSN:
+    # send_default_pii=False: no cookies, headers with credentials, or IP addresses go to Sentry.
+    sentry_sdk.init(dsn=config.SENTRY_DSN, environment=config.APP_ENV, send_default_pii=False,
+                    traces_sample_rate=0.0)
 
 app = FastAPI(title="Agentic AI Job Finder API", version="1.0")
 
@@ -32,6 +44,7 @@ MAX_CV_BYTES = config.MAX_CV_BYTES
 def _server_error(context: str) -> HTTPException:
     """Logs the full traceback on the server and returns a generic 500, so internals never reach the browser."""
     print(f"{context} ERROR:\n" + traceback.format_exc().encode("ascii", "ignore").decode("ascii"))
+    sentry_sdk.capture_exception()
     return HTTPException(status_code=500, detail="Something went wrong on the server. Please try again.")
 
 
@@ -46,8 +59,116 @@ def _require_own_session(session_id: str, user: models.User, db: Session) -> mod
     return session
 
 
+def _from_proxy(request: Request) -> bool:
+    """True when the request came through our Cloudflare Pages proxy (it sends the shared secret)."""
+    sent = request.headers.get("X-Proxy-Secret", "")
+    return bool(config.PROXY_SHARED_SECRET) and hmac.compare_digest(sent, config.PROXY_SHARED_SECRET)
+
+
 def _client_ip(request: Request) -> str:
+    """The visitor's IP. Behind the proxy it's the address Cloudflare saw, forwarded in X-Client-IP;
+    the header is only trusted when the proxy's secret came with it."""
+    if _from_proxy(request) and request.headers.get("X-Client-IP"):
+        return request.headers["X-Client-IP"]
     return request.client.host if request.client else "unknown"
+
+
+# Paths reachable without going through the proxy: Render's health check and the cleanup job.
+_DIRECT_OK = ("/api/health", "/internal/")
+
+
+@app.middleware("http")
+async def require_proxy(request: Request, call_next):
+    """When PROXY_SHARED_SECRET is set (production), the API only answers requests that came through
+    the Cloudflare Pages proxy, so nobody can skip its checks by calling the Render URL directly."""
+    if config.PROXY_SHARED_SECRET and not request.url.path.startswith(_DIRECT_OK) and not _from_proxy(request):
+        return JSONResponse({"detail": "Not found"}, status_code=404)
+    return await call_next(request)
+
+
+# Content Security Policy for the web app when this server serves it (local runs). Cloudflare Pages
+# sends the same policy from frontend/_headers in production.
+CSP = "; ".join([
+    "default-src 'self'",
+    "script-src 'self' https://cdn.jsdelivr.net https://challenges.cloudflare.com https://browser.sentry-cdn.com",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data: https:",
+    "connect-src 'self' https://*.ingest.sentry.io https://*.ingest.us.sentry.io https://*.ingest.de.sentry.io",
+    "frame-src https://challenges.cloudflare.com",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "object-src 'none'",
+])
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    h = response.headers
+    h.setdefault("X-Content-Type-Options", "nosniff")
+    h.setdefault("X-Frame-Options", "DENY")
+    h.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    h.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+    h.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    h.setdefault("Content-Security-Policy", CSP)
+    if config.IS_PRODUCTION:
+        h.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    if request.url.path.startswith("/api/"):
+        h.setdefault("Cache-Control", "no-store")
+    return response
+
+
+async def _verify_turnstile(token: str | None, ip: str) -> None:
+    """Cloudflare Turnstile check for sign-up and guest accounts. Skipped when no secret is set (local)."""
+    if not config.TURNSTILE_SECRET_KEY:
+        return
+    if not token:
+        raise HTTPException(status_code=400, detail="Please complete the 'I'm human' check.")
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            res = await client.post(
+                "https://challenges.cloudflare.com/turnstile/v0/siteverify",
+                data={"secret": config.TURNSTILE_SECRET_KEY, "response": token, "remoteip": ip},
+            )
+            ok = res.json().get("success") is True
+    except Exception:
+        ok = False
+    if not ok:
+        raise HTTPException(status_code=400, detail="The 'I'm human' check failed. Please try again.")
+
+
+def _quotas_enforced() -> bool:
+    # The owner's local build (with browser automation) isn't limited; the public demo is.
+    return not config.ENABLE_BROWSER_AUTOMATION
+
+
+def _runs_left(db: Session, user: models.User) -> int | None:
+    if not _quotas_enforced():
+        return None
+    mine = limits.remaining(db, f"runs:user:{user.id}", config.USER_DAILY_AGENT_RUNS, limits.DAY)
+    everyone = limits.remaining(db, "runs:global", config.GLOBAL_DAILY_AGENT_RUNS, limits.DAY)
+    return min(mine, everyone)
+
+
+def _charge_agent_run(db: Session, user: models.User) -> None:
+    """Counts one agent run against the user's and the demo's daily quota, or refuses with 429."""
+    if not _quotas_enforced():
+        return
+    if limits.remaining(db, "runs:global", config.GLOBAL_DAILY_AGENT_RUNS, limits.DAY) <= 0:
+        raise limits.too_many("The demo has reached today's limit for everyone. Please try again tomorrow.", limits.DAY)
+    if limits.remaining(db, f"runs:user:{user.id}", config.USER_DAILY_AGENT_RUNS, limits.DAY) <= 0:
+        raise limits.too_many(
+            f"You've used today's {config.USER_DAILY_AGENT_RUNS} agent runs. They reset at midnight UTC.", limits.DAY)
+    limits.consume(db, f"runs:user:{user.id}", limits.DAY)
+    limits.consume(db, "runs:global", limits.DAY)
+
+
+def _require_automation() -> None:
+    """Job-board sign-in and real auto-apply exist only in the local build with a browser."""
+    if not config.ENABLE_BROWSER_AUTOMATION:
+        raise HTTPException(status_code=404, detail="Browser automation is not available in this demo.")
 
 @app.get("/api/health")
 async def health():
@@ -58,7 +179,15 @@ async def health():
 async def frontend_config():
     """Settings the web app needs. browser_viewer_url is set in Docker, where the visible browser
     windows (job-board sign-in, auto-apply) run on a virtual screen shown through noVNC."""
-    return {"browser_viewer_url": config.BROWSER_VIEWER_URL}
+    return {
+        "browser_viewer_url": config.BROWSER_VIEWER_URL if config.ENABLE_BROWSER_AUTOMATION else None,
+        "automation": config.ENABLE_BROWSER_AUTOMATION,
+        "turnstile_site_key": config.TURNSTILE_SITE_KEY or None,
+        "sentry_dsn": config.SENTRY_FRONTEND_DSN or None,
+        "environment": config.APP_ENV,
+        "demo_video_url": config.DEMO_VIDEO_URL or None,
+        "max_cv_mb": config.MAX_CV_BYTES // (1024 * 1024),
+    }
 
 # Updated Pydantic Models to require user_id
 class SearchRequest(BaseModel):
@@ -163,6 +292,7 @@ async def start_job_search(
 ):
     """Protected: Only logged-in users can trigger the AI agents, and only in their own chat sessions."""
     session = _require_own_session(req.session_id, current_user, db)
+    _charge_agent_run(db, current_user)
     session.updated_at = utcnow()
     db.commit()
     try:
@@ -170,20 +300,20 @@ async def start_job_search(
         if session.title == "New Chat":
             from langchain_core.messages import HumanMessage
 
-            from agent.nodes import llm
+            from agent.nodes import extract_text_from_response, llm
             try:
                 # Ask LLM for a very short title
                 prompt = f"Generate a short title (max 4 words) for this chat based on the user's first message. Message: '{req.query}'. Output ONLY the title, nothing else."
                 title_res = llm.invoke([HumanMessage(content=prompt)])
-                new_title = title_res.content.strip().replace('"', '')
-                session.title = new_title
+                new_title = extract_text_from_response(title_res.content).strip().replace('"', '')
+                session.title = new_title[:80] or "New Chat"
                 db.commit()
             except Exception:
                 # Fallback to truncating
                 session.title = req.query[:30] + ("..." if len(req.query) > 30 else "")
                 db.commit()
 
-        config = {"configurable": {"thread_id": req.session_id}}
+        run_config: RunnableConfig = {"configurable": {"thread_id": req.session_id}}
         
         # Securely inject the verified user ID into the LangGraph state
         user_id_str = f"user_{current_user.id}"
@@ -201,7 +331,7 @@ async def start_job_search(
             "preferred_locations": current_user.preferred_locations
         }
 
-        initial_state = {
+        initial_state: Any = {
             "user_id": user_id_str,  
             "messages": [("user", req.query)],
             "user_profile": {},
@@ -217,11 +347,11 @@ async def start_job_search(
         }
 
         # Run until the first interrupt
-        for _event in langgraph_app.stream(initial_state, config, stream_mode="values"):
+        for _event in langgraph_app.stream(initial_state, run_config, stream_mode="values"):
             pass
 
         # Check graph state
-        state_snapshot = langgraph_app.get_state(config)
+        state_snapshot = langgraph_app.get_state(run_config)
         values = state_snapshot.values
         
         # If the router decided this was a chat, return the chat response
@@ -276,16 +406,16 @@ async def select_jobs(
     _require_own_session(req.session_id, current_user, db).updated_at = utcnow()
     db.commit()
     try:
-        config = {"configurable": {"thread_id": req.session_id}}
+        run_config: RunnableConfig = {"configurable": {"thread_id": req.session_id}}
         
         # Resume with the selected job indices
         for _event in langgraph_app.stream(
-            Command(resume=req.selected_indices), config, stream_mode="values"
+            Command(resume=req.selected_indices), run_config, stream_mode="values"
         ):
             pass
 
         # Check if we hit the next interrupt (human_approval_node)
-        state_snapshot = langgraph_app.get_state(config)
+        state_snapshot = langgraph_app.get_state(run_config)
         values = state_snapshot.values
         
         if state_snapshot.next and "human_approval_node" in state_snapshot.next:
@@ -321,16 +451,19 @@ async def resume_job_search(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)  # <-- INJECT DATABASE SESSION
 ):
-    """Resumes the paused LangGraph agent and SAVES the result to SQLite."""
-    _require_own_session(req.session_id, current_user, db)
-    config = {"configurable": {"thread_id": req.session_id}}
+    """Resumes the paused agent (real auto-apply locally, the dry run in the demo) and logs the applications."""
+    _require_own_session(req.session_id, current_user, db).updated_at = utcnow()
+    db.commit()
+    if req.feedback == "approve":
+        _charge_agent_run(db, current_user)
+    run_config: RunnableConfig = {"configurable": {"thread_id": req.session_id}}
 
     # 0. The agent never logs in: the user must have signed in to each job board themselves first.
-    if req.feedback == "approve":
-        pending_jobs = langgraph_app.get_state(config).values.get("scored_jobs", []) or req.jobs or []
+    if req.feedback == "approve" and config.ENABLE_BROWSER_AUTOMATION:
+        pending_jobs = langgraph_app.get_state(run_config).values.get("scored_jobs", []) or req.jobs or []
         missing = job_boards.missing_sign_ins(f"user_{current_user.id}", [j.get("link", "") for j in pending_jobs])
         if missing:
-            names = ", ".join(job_boards.BOARDS[b]["name"] for b in missing)
+            names = ", ".join(str(job_boards.BOARDS[b]["name"]) for b in missing)  # type: ignore[index]
             raise HTTPException(status_code=409, detail={
                 "message": f"Sign in to {names} first, so the agent can apply with your own account.",
                 "boards": missing,
@@ -338,11 +471,11 @@ async def resume_job_search(
 
     try:
         # 1. Resume the agent with the user's approval
-        for _event in langgraph_app.stream(Command(resume=req.feedback), config, stream_mode="values"):
+        for _event in langgraph_app.stream(Command(resume=req.feedback), run_config, stream_mode="values"):
             pass
             
         # 2. Get the final assets the AI generated
-        final_state = langgraph_app.get_state(config).values
+        final_state = langgraph_app.get_state(run_config).values
         raw_assets = final_state.get("tailored_assets", {}).get("top_job_assets", "Assets generated but empty.")
         
         # Safely convert to a string if the LLM returned a list or dictionary
@@ -370,6 +503,8 @@ async def resume_job_search(
                 final_status = r.get("final_status", "Applied")
                 if final_status == "submitted":
                     status = "Applied"
+                elif final_status == "dry_run":
+                    status = "Dry run (not submitted)"
                 elif final_status == "captcha_timeout":
                     status = "Requires Manual Intervention"
                 elif final_status == "login_required":
@@ -414,6 +549,15 @@ async def resume_job_search(
 class UserAuthRequest(BaseModel):
     username: str
     password: str
+    turnstile_token: str | None = None
+
+
+class GuestRequest(BaseModel):
+    turnstile_token: str | None = None
+
+
+class DeleteAccountRequest(BaseModel):
+    password: str | None = None
 
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{3,64}$")
 MIN_PASSWORD_LEN = 8
@@ -422,6 +566,7 @@ MIN_PASSWORD_LEN = 8
 async def signup(user: UserAuthRequest, request: Request, db: Session = Depends(get_db)):
     """Registers a new user in the database with a hashed password."""
     limits.rate_limit(db, f"signup:ip:{_client_ip(request)}", config.SIGNUP_PER_IP_PER_HOUR, limits.HOUR)
+    await _verify_turnstile(user.turnstile_token, _client_ip(request))
 
     username = user.username.strip()
     if not USERNAME_RE.match(username):
@@ -450,48 +595,101 @@ async def signup(user: UserAuthRequest, request: Request, db: Session = Depends(
     return {"message": "User created successfully. You can now log in."}
 
 
+def _user_payload(u: models.User) -> dict:
+    """What the browser may know about the signed-in user (never the password hash or the token)."""
+    return {
+        "user_id": u.id,
+        "username": u.username,
+        "is_guest": bool(u.is_guest),
+        "cv_filename": u.cv_filename,
+        "full_name": u.full_name,
+        "email": u.email,
+        "phone": u.phone,
+        "university": u.university,
+        "degree": u.degree,
+        "gpa": u.gpa,
+        "graduation_year": u.graduation_year,
+        "skills": u.skills,
+        "work_experience": u.work_experience,
+        "linkedin_url": u.linkedin_url,
+        "github_url": u.github_url,
+        "preferred_job_titles": u.preferred_job_titles,
+        "preferred_locations": u.preferred_locations,
+        "profile_completed": bool(u.profile_completed),
+    }
+
+
 @app.post("/api/login")
-async def login(user: UserAuthRequest, request: Request, db: Session = Depends(get_db)):
-    """Authenticates a user and returns a JWT access token."""
+async def login(user: UserAuthRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    """Checks the password and starts a session: an httpOnly cookie plus a CSRF cookie."""
     limits.rate_limit(db, f"login:ip:{_client_ip(request)}", config.LOGIN_PER_IP_PER_MINUTE, limits.MINUTE)
     limits.rate_limit(db, f"login:user:{user.username.strip().lower()}", config.LOGIN_PER_USER_PER_5_MIN, 5 * limits.MINUTE)
-    user.username = user.username.strip()
+    username = user.username.strip()
 
-    # 1. Find the user in the database
-    db_user = db.query(models.User).filter(models.User.username == user.username).first()
-    
-    # 2. Verify the user exists and the password matches
-    if not db_user or not verify_password(user.password, db_user.hashed_password):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-        )
-    
-    # 3. Generate the JWT (embedding the user's database ID)
-    access_token = create_access_token(data={"sub": str(db_user.id)})
-    
-    # Look at the bottom of your login function and update the return dictionary:
-    return {
-        "access_token": access_token, 
-        "token_type": "bearer",
-        "user_id": db_user.id,
-        "username": db_user.username,
-        "cv_filename": db_user.cv_filename,
-        "full_name": db_user.full_name,
-        "email": db_user.email,
-        "phone": db_user.phone,
-        "university": db_user.university,
-        "degree": db_user.degree,
-        "gpa": db_user.gpa,
-        "graduation_year": db_user.graduation_year,
-        "skills": db_user.skills,
-        "work_experience": db_user.work_experience,
-        "linkedin_url": db_user.linkedin_url,
-        "github_url": db_user.github_url,
-        "preferred_job_titles": db_user.preferred_job_titles,
-        "preferred_locations": db_user.preferred_locations,
-        "profile_completed": db_user.profile_completed
-    }
+    db_user = db.query(models.User).filter(models.User.username == username).first()
+    if not verify_password_or_dummy(user.password, db_user.hashed_password if db_user else None) or not db_user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password")
+    if db_user.is_guest:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password")
+
+    set_login_cookies(response, db_user.id)
+    return _user_payload(db_user)
+
+
+@app.post("/api/logout")
+async def logout(response: Response):
+    clear_login_cookies(response)
+    return {"status": "signed_out"}
+
+
+@app.get("/api/me")
+async def me(current_user: models.User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Who is signed in (the page calls this on load to restore the session from the cookie)."""
+    return {**_user_payload(current_user), "runs_left": _runs_left(db, current_user),
+            "runs_per_day": config.USER_DAILY_AGENT_RUNS if _quotas_enforced() else None}
+
+
+@app.post("/api/guest")
+async def start_guest(req: GuestRequest, request: Request, response: Response, db: Session = Depends(get_db)):
+    """One click into a ready-made demo account (deleted after GUEST_TTL_HOURS)."""
+    ip = _client_ip(request)
+    limits.rate_limit(db, f"guest:ip:{ip}", config.GUEST_PER_IP_PER_HOUR, limits.HOUR)
+    await _verify_turnstile(req.turnstile_token, ip)
+    try:
+        guest = demo.create_guest(db)
+    except Exception:
+        raise _server_error("GUEST") from None
+    set_login_cookies(response, guest.id)
+    return {**_user_payload(guest), "runs_left": _runs_left(db, guest),
+            "runs_per_day": config.USER_DAILY_AGENT_RUNS if _quotas_enforced() else None}
+
+
+@app.delete("/api/account")
+async def delete_account(
+    req: DeleteAccountRequest,
+    response: Response,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Deletes the account and everything stored for it: CV, chats, agent state, applications."""
+    if not current_user.is_guest and not verify_password_or_dummy(req.password or "", current_user.hashed_password):
+        raise HTTPException(status_code=403, detail="That password isn't right.")
+    try:
+        retention.delete_user_everything(db, current_user)
+    except Exception:
+        raise _server_error("DELETE-ACCOUNT") from None
+    clear_login_cookies(response)
+    return {"status": "deleted"}
+
+
+@app.post("/internal/cleanup")
+async def internal_cleanup(request: Request, db: Session = Depends(get_db)):
+    """Daily retention job, called by a scheduled GitHub Action with the shared secret."""
+    sent = request.headers.get("X-Cleanup-Secret", "")
+    if not config.CLEANUP_SECRET or not hmac.compare_digest(sent, config.CLEANUP_SECRET):
+        raise HTTPException(status_code=404, detail="Not Found")
+    return {"status": "ok", "deleted": retention.run_cleanup(db)}
+
 
 @app.get("/api/user/cv")
 async def get_user_cv(current_user: models.User = Depends(get_current_user)):
@@ -630,13 +828,7 @@ async def delete_cv(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    if current_user.cv_key:
-        get_storage().delete(current_user.cv_key)
-    current_user.cv_filename = None
-    current_user.cv_key = None
-    current_user.cv_uploaded_at = None
-    db.commit()
-    vector_store.delete_user_documents(current_user.id)
+    retention.delete_cv(db, current_user)
     return {"status": "success", "message": "CV deleted"}
 
 
@@ -678,8 +870,8 @@ def get_session_history(session_id: str, current_user: models.User = Depends(get
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
         
-    config = {"configurable": {"thread_id": session_id}}
-    state_snapshot = langgraph_app.get_state(config)
+    run_config: RunnableConfig = {"configurable": {"thread_id": session_id}}
+    state_snapshot = langgraph_app.get_state(run_config)
     values = state_snapshot.values if state_snapshot else {}
     messages = values.get("messages", [])
     
@@ -749,12 +941,14 @@ def _board_or_404(board: str) -> str:
 @app.get("/api/job-boards")
 def get_job_boards(current_user: models.User = Depends(get_current_user)):
     """Which job boards this user has signed in to for auto-apply."""
+    _require_automation()
     return job_boards.status(f"user_{current_user.id}")
 
 @app.post("/api/job-boards/{board}/sign-in")
 def sign_in_job_board(board: str, current_user: models.User = Depends(get_current_user)):
     """Opens a browser window on this computer at the board's sign-in page, in the user's own
     profile, and waits until the user closes it. Sync def: FastAPI runs it in a worker thread."""
+    _require_automation()
     _board_or_404(board)
     try:
         result = job_boards.open_sign_in_window(f"user_{current_user.id}", board)
@@ -769,6 +963,7 @@ def sign_in_job_board(board: str, current_user: models.User = Depends(get_curren
 @app.post("/api/job-boards/{board}/confirm")
 def confirm_job_board(board: str, req: BoardConfirmRequest, current_user: models.User = Depends(get_current_user)):
     """For boards whose sign-in can't be checked automatically, the user says whether it worked."""
+    _require_automation()
     _board_or_404(board)
     return job_boards.set_signed_in(f"user_{current_user.id}", board, req.signed_in, verified=False)
 
