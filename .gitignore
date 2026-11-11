@@ -12,7 +12,7 @@ browser_profile/user_*/
 
 # Runtime data (browser sessions, agent screenshots, LangGraph checkpoints, trackers)
 browser_profile/
-screenshots/
+/screenshots/
 checkpoints.sqlite*
 tracker_user_*.json
 
