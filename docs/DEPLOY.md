@@ -28,7 +28,7 @@ The app creates its tables, turns on pgvector, and stores uploaded CVs in this d
    Other addresses answer *Not found*. That's on purpose: the API only accepts requests from
    your web page.
 
-Render deploys the `chore/phase-1-cleanup` branch, and only after CI passes. If Render says
+Render deploys the `main` branch, and only after CI passes. If Render says
 `autoDeployTrigger` is unknown, delete that line from `render.yaml`, then pick *Settings → Build &
 Deploy → Auto-Deploy → After CI Checks Pass* in the dashboard.
 
@@ -44,7 +44,7 @@ Cloudflare now creates a **Worker** when you connect a repository (the page show
      change that line if you pick another name.
    - **Build command:** leave empty. **Deploy command:** `npx wrangler deploy` (the default).
 3. Worker → **Settings** → **Build** → **Branch control**: set the production branch to
-   `chore/phase-1-cleanup`.
+   `main`.
 4. Worker → **Settings** → **Variables and Secrets** → **Add**, type **Secret**, for both:
    - `API_ORIGIN` = your Render URL (no `/` at the end)
    - `PROXY_SHARED_SECRET` = the value from Render
@@ -53,7 +53,7 @@ Cloudflare now creates a **Worker** when you connect a repository (the page show
    for up to a minute.
 
 *Classic Cloudflare Pages also works* (the repository keeps `functions/api/` for it): production
-branch `chore/phase-1-cleanup`, no build command, output directory `frontend`, and the same two
+branch `main`, no build command, output directory `frontend`, and the same two
 variables.
 
 **That's the demo online.** Share the `workers.dev` (or `pages.dev`) link.

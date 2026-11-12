@@ -11,7 +11,7 @@ services:
     dockerContext: .
     healthCheckPath: /api/health
     # The branch Render deploys from.
-    branch: chore/phase-1-cleanup
+    branch: main
     # Deploy a commit only after its GitHub checks (CI) have passed.
     autoDeployTrigger: checksPass
     envVars:
