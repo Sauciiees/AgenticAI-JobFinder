@@ -3,7 +3,7 @@
 [![CI](https://github.com/Sauciiees/AgenticAI-JobFinder/actions/workflows/ci.yml/badge.svg?branch=chore/phase-1-cleanup)](https://github.com/Sauciiees/AgenticAI-JobFinder/actions/workflows/ci.yml?query=branch%3Achore/phase-1-cleanup)
 
 A multi-agent assistant that searches four Thai job boards (LinkedIn, JobsDB, JobBKK, JobTopGun), scores each role against your CV, drafts a
-tailored cover letter and resume bullets, and (on its owner's machine) applies in a real browser.
+tailored cover letter and resume bullets, and (in the local full build) signs in to the boards and applies in a real browser.
 Built with **LangGraph**, **Gemini**, **FastAPI** and **Postgres + pgvector**.
 
 **Live demo:** https://agenticai-jobfinder.saucesage009.workers.dev. Click **Try it as a guest** for a ready-made
@@ -63,13 +63,28 @@ flowchart LR
 | Reliability | Alembic migrations run before each start; deploys only after CI passes; Sentry on both ends; "waking up" screen for the free tier's cold start |
 | Cost | $0: Render, Neon and Cloudflare Pages free tiers (Turnstile, Sentry optional). The API uses about 150 MB of Render's 512 MB |
 
-**Two builds from one codebase.** `ENABLE_BROWSER_AUTOMATION` switches between:
+## Two builds from one codebase
 
-- **Public demo** (`api.dockerfile`): no browser. All four boards' search pages and the job pages
-  are scraped over plain HTTP; auto-apply runs as a dry run; quotas on.
-- **Local full build** (`backend.dockerfile` + `docker compose`): Playwright searches, job-board
-  sign-in in a visible browser (viewable through noVNC), and real auto-apply with Gemini vision.
-  Your job-board sessions never leave your machine.
+The **local full build is the complete product**. The public demo is the same code with
+browser automation switched off (`ENABLE_BROWSER_AUTOMATION`), so anyone can try it safely
+without handing over job-board logins.
+
+| Feature | Local full build | Public demo |
+|---|---|---|
+| Search LinkedIn, JobsDB, JobBKK, JobTopGun | ✅ | ✅ |
+| Match scores, cover letters, resume bullets from your CV | ✅ | ✅ |
+| Career-advice chat over your CV | ✅ | ✅ |
+| Job-board sign-in (Profile) | ✅ Sign in once per board in a real browser window | 🔒 Shown but locked |
+| Auto-apply | ✅ **Real**: Playwright + Gemini vision fill and submit the form | Dry run: plans the steps and answers, submits nothing |
+| Daily quotas | Off | 10 agent runs per user, 60 overall |
+| Where your data lives | Your machine only (SQLite or local Postgres) | Neon Postgres, guests deleted after 24 h |
+
+- **Local full build** (`python scripts/dev.py --automation`, or `backend.dockerfile` +
+  `docker compose` with a noVNC browser view): job-board sign-in in a visible browser and real
+  auto-apply. Job-board sessions are kept per user under `browser_profile/` and never leave the
+  machine.
+- **Public demo** (`api.dockerfile`): no browser. All four boards' search pages and job pages
+  are scraped over plain HTTP; auto-apply runs as a dry run; the sign-in endpoints return 404.
 
 ## Run it locally
 
@@ -81,7 +96,16 @@ copy .env.example .env            # then fill in GOOGLE_API_KEY and JWT_SECRET_K
 python scripts/dev.py             # http://localhost:8000, demo mode, SQLite
 ```
 
-Full build with real auto-apply (needs Docker):
+Full build with job-board sign-in and real auto-apply, without Docker (the sign-in and
+auto-apply windows open on your desktop):
+
+```bash
+pip install -r requirements-automation.txt
+playwright install chromium
+python scripts/dev.py --automation
+```
+
+Or the same full build in Docker:
 
 ```bash
 docker compose up --build         # http://localhost:8000, browser view at http://localhost:6080
@@ -98,7 +122,7 @@ TEST_POSTGRES=1 pytest            # embedded Postgres 16 + pgvector, no Docker n
 ruff check . && mypy
 ```
 
-88 tests cover auth and CSRF, rate limits and quotas, uploads, data isolation between users,
+99 tests cover auth and CSRF, rate limits and quotas, uploads, data isolation between users,
 retention, the proxy checks, and the whole agent pipeline with a fake LLM. CI runs them on SQLite
 and on a pgvector Postgres container.
 

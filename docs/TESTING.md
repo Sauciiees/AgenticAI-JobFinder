@@ -12,7 +12,7 @@ $env:TEST_POSTGRES = "1"    # PowerShell; Git Bash/macOS/Linux: export TEST_POST
 pytest                      # embedded Postgres 16 + pgvector
 ```
 
-All 88 tests should pass on both. No real API calls are made.
+All 99 tests should pass on both. No real API calls are made.
 
 ## 2. The public demo, on your machine (10 minutes)
 

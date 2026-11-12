@@ -1062,7 +1062,7 @@
     v.replaceChildren(h("div", { class: "page" },
       h("header", { class: "page-head" }, h("div", null, h("h1", null, "Profile"), h("p", null, "Your agents use this to choose, score and tailor applications."))),
       renderProgress(p),
-      h("div", { class: "settings" }, renderCvSection(p), state.config.automation ? renderBoardsSection() : null),
+      h("div", { class: "settings" }, renderCvSection(p), state.config.automation ? renderBoardsSection() : renderLockedBoardsSection()),
       form,
       h("div", { class: "settings" }, renderDangerSection())));
   }
@@ -1076,6 +1076,24 @@
         h("h2", { id: "sec-boards" }, "Job board sign-in"),
         h("p", null, "Sign in once on each site you want to auto-apply on. The agent uses these sessions and never logs in for you. The window opens on the computer running Job Finder.")),
       h("div", { class: "setting-panel" }, list));
+  }
+
+  /** The public demo has no browser, so job-board sign-in is shown but locked (the API refuses it too). */
+  function renderLockedBoardsSection() {
+    const boards = ["LinkedIn", "JobsDB", "JobBKK", "JobTopGun"];
+    const video = state.config.demo_video_url;
+    return h("section", { class: "setting", "aria-labelledby": "sec-boards" },
+      h("div", { class: "setting-label" },
+        h("h2", { id: "sec-boards" }, "Job board sign-in"),
+        h("p", null, "Real auto-apply runs only in the owner's local build, where you sign in once on each board and the agent applies with those sessions. This online demo never asks for or stores job-board logins.",
+          video ? [" ", h("a", { href: video, target: "_blank", rel: "noopener noreferrer" }, "Watch it apply for real")] : null)),
+      h("div", { class: "setting-panel" },
+        h("ul", { class: "boards boards-locked" }, boards.map((name) =>
+          h("li", { class: "board-row" },
+            h("div", { class: "board-main" },
+              h("span", { class: "board-name" }, name),
+              h("span", { class: "board-state" }, icon("lock"), "Local build only")),
+            h("button", { class: "btn btn-outline", type: "button", disabled: true, "aria-disabled": "true" }, `Sign in to ${name}`))))));
   }
 
   function renderDangerSection() {
