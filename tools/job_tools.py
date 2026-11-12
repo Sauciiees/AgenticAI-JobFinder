@@ -1,4 +1,5 @@
 import os
+from collections.abc import Callable
 from typing import Any
 
 import requests
@@ -74,30 +75,40 @@ def _serper_budget_available() -> bool:
     return limits.consume(db, "serper:global", limits.DAY) <= config.GLOBAL_DAILY_SERPER_CALLS
 
 
-# Serper "site:" filters for boards searched without a browser (the public demo).
-SERPER_BOARDS = [
-    ("JobsDB", "th.jobsdb.com/job"),
-    ("Indeed", "indeed.com/viewjob"),
-    ("JobBKK", "jobbkk.com/jobs/detail"),
-]
+# Indeed blocks automated visits to its search page, so Indeed jobs are found through Serper
+# (Google results for Indeed job pages); the job pages themselves are then read like the others.
+INDEED_SERPER_SITE = "th.indeed.com/viewjob"
+
+
+def indeed_serper_search(keyword: str, location: str, time_filter: str = "qdr:w", num: int = 5) -> list:
+  """Indeed job links via Serper. Returns [] without SERPER_API_KEY or once the daily budget is used."""
+  return _serper_search_structured(keyword, location, INDEED_SERPER_SITE, "Indeed", time_filter, num)
 
 
 def public_job_search(keyword: str, location: str, time_filter: str = "qdr:w") -> list:
-  """Job search without a browser: LinkedIn's public search page plus Serper for the other boards."""
+  """Job search without a browser, across all four boards: LinkedIn, JobsDB and JobBKK search pages
+  scraped over plain HTTP, and Indeed through Serper."""
   from concurrent.futures import ThreadPoolExecutor
 
+  from tools.http_boards import jobbkk_http_search, jobsdb_http_search
   from tools.linkedin_search import linkedin_direct_search
 
-  with ThreadPoolExecutor(max_workers=1 + len(SERPER_BOARDS)) as pool:
-    linkedin = pool.submit(linkedin_direct_search, keyword, location, time_filter, 10)
-    others = [pool.submit(_serper_search_structured, keyword, location, site, name, time_filter, 5)
-              for name, site in SERPER_BOARDS]
-    jobs: list = []
-    for future in [linkedin, *others]:
+  sources: list[tuple[str, Callable[..., list], tuple]] = [
+      ("LinkedIn", linkedin_direct_search, (keyword, location, time_filter, 10)),
+      ("JobsDB", jobsdb_http_search, (keyword, location, 5, time_filter)),
+      ("JobBKK", jobbkk_http_search, (keyword, location, 5, time_filter)),
+      ("Indeed", indeed_serper_search, (keyword, location, time_filter, 5)),
+  ]
+  jobs: list = []
+  with ThreadPoolExecutor(max_workers=len(sources)) as pool:
+    futures = [(name, pool.submit(fn, *args)) for name, fn, args in sources]
+    for name, future in futures:
       try:
-        jobs.extend(future.result())
+        found = future.result()
+        print(f"  {name}: {len(found)} jobs")
+        jobs.extend(found)
       except Exception as e:
-        print(f"Job search source failed: {e}")
+        print(f"Job search source {name} failed: {e}")
   return jobs
 
 

@@ -208,6 +208,10 @@ def _browser_job_search(search_keyword: str, search_location: str, time_filter: 
       for name, future in futures:
           try:
               found = future.result()
+              if name == "Indeed" and not found:
+                  # Indeed often blocks automated browsers; fall back to Indeed links via Serper.
+                  from tools.job_tools import indeed_serper_search
+                  found = indeed_serper_search(search_keyword, search_location, time_filter, 5)
               print(f"  {name}: {len(found)} jobs")
               all_jobs.extend(found)
           except Exception as e:
