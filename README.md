@@ -1,6 +1,6 @@
 # Job Finder: an agentic AI job search assistant
 
-[![CI](https://github.com/Sauciiees/AgenticAI-JobFinder/actions/workflows/ci.yml/badge.svg?branch=chore/phase-1-cleanup)](https://github.com/Sauciiees/AgenticAI-JobFinder/actions/workflows/ci.yml?query=branch%3Achore/phase-1-cleanup)
+[![CI](https://github.com/Sauciiees/AgenticAI-JobFinder/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Sauciiees/AgenticAI-JobFinder/actions/workflows/ci.yml?query=branch%3Amain)
 
 A multi-agent assistant that searches four Thai job boards (LinkedIn, JobsDB, JobBKK, JobTopGun), scores each role against your CV, drafts a
 tailored cover letter and resume bullets, and (in the local full build) signs in to the boards and applies in a real browser.
