@@ -77,8 +77,6 @@ TURNSTILE_SECRET_KEY = os.getenv("TURNSTILE_SECRET_KEY", "")
 # Limits (all counted in the database, so restarts don't reset them).
 USER_DAILY_AGENT_RUNS = _int("USER_DAILY_AGENT_RUNS", 10)
 GLOBAL_DAILY_AGENT_RUNS = _int("GLOBAL_DAILY_AGENT_RUNS", 60)
-# Serper's free tier is 2,500 searches a month, about 80 a day.
-GLOBAL_DAILY_SERPER_CALLS = _int("GLOBAL_DAILY_SERPER_CALLS", 80)
 LOGIN_PER_IP_PER_MINUTE = _int("LOGIN_PER_IP_PER_MINUTE", 5)
 LOGIN_PER_USER_PER_5_MIN = _int("LOGIN_PER_USER_PER_5_MIN", 8)
 SIGNUP_PER_IP_PER_HOUR = _int("SIGNUP_PER_IP_PER_HOUR", 3)

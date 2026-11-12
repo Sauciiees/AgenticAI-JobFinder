@@ -1,6 +1,6 @@
 """The public demo end to end with a fake LLM and fake job search: guest accounts, the agent
 pipeline with the auto-apply dry run, daily quotas, account deletion, retention cleanup, Turnstile,
-security headers and the Serper budget."""
+and security headers."""
 
 import json
 from datetime import timedelta
@@ -228,7 +228,7 @@ def test_retention_deletes_old_guests_cvs_and_chats(client, make_user):
         assert db.query(Application).filter_by(user_id=old_guest["user_id"]).count() == 0
 
 
-# --- Turnstile, headers, Serper budget -------------------------------------------------------------------
+# --- Turnstile and headers -------------------------------------------------------------------
 
 def test_turnstile_required_when_configured(client, monkeypatch):
     import server
@@ -253,24 +253,6 @@ def test_security_headers(client):
     assert "frame-ancestors 'none'" in res.headers["Content-Security-Policy"]
     assert res.headers["Cache-Control"] == "no-store"
 
-
-def test_serper_budget_stops_calls(monkeypatch):
-    from tools import job_tools
-
-    calls = []
-
-    class Resp:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"organic": []}
-
-    monkeypatch.setattr(job_tools.requests, "post", lambda *a, **k: calls.append(1) or Resp())
-    monkeypatch.setattr(config, "GLOBAL_DAILY_SERPER_CALLS", 2)
-    for _ in range(4):
-        job_tools._serper_search_structured("x", "y", "z", "P")
-    assert len(calls) == 2
 
 
 def test_cleanup_runs_when_the_server_starts(monkeypatch):

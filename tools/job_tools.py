@@ -1,103 +1,29 @@
-import os
-from collections.abc import Callable
-from typing import Any
+"""Job search across the four boards the app scrapes directly: LinkedIn, JobsDB, JobBKK and JobTopGun.
 
-import requests
+All four send their search results as ordinary HTML, so no browser and no search API are needed.
+The local full build still uses Playwright for JobsDB and JobBKK (agent/nodes.py).
+"""
+
+from collections.abc import Callable
+
 from langchain_core.tools import tool
 
-# Without a timeout a stalled Serper call would hang the request (and a server worker) forever.
-SERPER_TIMEOUT_SECONDS = 15
-
-
-def _serper_search_structured(keyword: str, location: str, site: str, platform_name: str, time_filter: str = "qdr:w", num: int = 10) -> list:
-  """Internal function that returns structured job data as a list of dicts."""
-  api_key = os.getenv("SERPER_API_KEY")
-  if not api_key:
-    return []
-  if not _serper_budget_available():
-    print(f"Serper daily budget used up; skipping {platform_name}.")
-    return []
-
-  query = f"site:{site} {keyword} {location}"
-  url = "https://google.serper.dev/search"
-  payload: dict[str, Any] = {"q": query, "num": num, "tbs": time_filter}
-  headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
-
-  try:
-    response = requests.post(url, json=payload, headers=headers, timeout=SERPER_TIMEOUT_SECONDS)
-    response.raise_for_status()
-    data = response.json()
-
-    organic_results = data.get("organic", [])
-    jobs = []
-    import re
-    
-    for item in organic_results:
-      title = item.get("title", "")
-      link = item.get("link", "")
-      snippet = item.get("snippet", "")
-      
-      # Heuristic filters to ignore search/directory pages:
-      # 1. Title contains numbers with plus (e.g. "1000+", "75+")
-      if re.search(r'\d+\+', title):
-          continue
-      # 2. Title has "(XX Open Roles)" or "งาน" search directories
-      if re.search(r'(?i)\bopen roles\b', title):
-          continue
-      # 3. LinkedIn specific: Real jobs usually have "/view/" in the URL, not just "/jobs/some-category"
-      if "linkedin.com" in link and "/view/" not in link:
-          continue
-          
-      clean_title, company_name = _clean_title_and_company(title, snippet)
-      
-      jobs.append({
-          "title": clean_title,
-          "company": company_name,
-          "snippet": snippet,
-          "link": link,
-          "platform": platform_name,
-          "date": item.get("date", ""),
-      })
-    return jobs
-
-  except Exception as e:
-    print(f"Serper API error for {platform_name}: {str(e)}")
-    return []
-
-
-def _serper_budget_available() -> bool:
-  """Counts one Serper call against the shared daily budget (free tier: 2,500 a month)."""
-  import config
-  import limits
-  from database import SessionLocal
-
-  with SessionLocal() as db:
-    return limits.consume(db, "serper:global", limits.DAY) <= config.GLOBAL_DAILY_SERPER_CALLS
-
-
-# Indeed blocks automated visits to its search page, so Indeed jobs are found through Serper
-# (Google results for Indeed job pages); the job pages themselves are then read like the others.
-INDEED_SERPER_SITE = "th.indeed.com/viewjob"
-
-
-def indeed_serper_search(keyword: str, location: str, time_filter: str = "qdr:w", num: int = 5) -> list:
-  """Indeed job links via Serper. Returns [] without SERPER_API_KEY or once the daily budget is used."""
-  return _serper_search_structured(keyword, location, INDEED_SERPER_SITE, "Indeed", time_filter, num)
+BOARDS = ("LinkedIn", "JobsDB", "JobBKK", "JobTopGun")
 
 
 def public_job_search(keyword: str, location: str, time_filter: str = "qdr:w") -> list:
-  """Job search without a browser, across all four boards: LinkedIn, JobsDB and JobBKK search pages
-  scraped over plain HTTP, and Indeed through Serper."""
+  """Job search without a browser, across all four boards, run in parallel. A board that fails or
+  finds nothing is skipped; the others still return their jobs."""
   from concurrent.futures import ThreadPoolExecutor
 
-  from tools.http_boards import jobbkk_http_search, jobsdb_http_search
+  from tools.http_boards import jobbkk_http_search, jobsdb_http_search, jobtopgun_http_search
   from tools.linkedin_search import linkedin_direct_search
 
   sources: list[tuple[str, Callable[..., list], tuple]] = [
       ("LinkedIn", linkedin_direct_search, (keyword, location, time_filter, 10)),
       ("JobsDB", jobsdb_http_search, (keyword, location, 5, time_filter)),
       ("JobBKK", jobbkk_http_search, (keyword, location, 5, time_filter)),
-      ("Indeed", indeed_serper_search, (keyword, location, time_filter, 5)),
+      ("JobTopGun", jobtopgun_http_search, (keyword, location, 5, time_filter)),
   ]
   jobs: list = []
   with ThreadPoolExecutor(max_workers=len(sources)) as pool:
@@ -112,71 +38,15 @@ def public_job_search(keyword: str, location: str, time_filter: str = "qdr:w") -
   return jobs
 
 
-def _clean_title_and_company(title: str, snippet: str):
-  """Extracts clean job title and company from Google Search title."""
-  company = "Unknown Company"
-  clean_title = title
-  
-  import re
-  
-  # Remove common trailing platform junk
-  clean_title = re.sub(r'(?i)\s*-\s*Indeed\.com.*$', '', clean_title)
-  clean_title = re.sub(r'(?i)\s*-\s*JobsDB.*$', '', clean_title)
-  clean_title = re.sub(r'(?i)\s*-\s*JOBBKK.*$', '', clean_title)
-  clean_title = re.sub(r'(?i)\s*\|\s*LinkedIn.*$', '', clean_title)
-  clean_title = re.sub(r'(?i)\s*jobs in\s+.*$', '', clean_title)
-  clean_title = re.sub(r'(?i)\s*งาน\s+.*$', '', clean_title) # Thai "jobs in"
-  
-  # 1. Handle LinkedIn format: "Company hiring Title in Location"
-  if " hiring " in clean_title or " กำลังรับสมัคร " in clean_title:
-      split_word = " hiring " if " hiring " in clean_title else " กำลังรับสมัคร "
-      parts = clean_title.split(split_word, 1)
-      company = parts[0].strip()
-      clean_title = parts[1].strip()
-      clean_title = re.sub(r' in .*$', '', clean_title).strip()
-      clean_title = re.sub(r' ใน .*$', '', clean_title).strip()
-      
-  # 2. Handle "Title at Company" or "Title @ Company"
-  elif " at " in clean_title.lower() or " @ " in clean_title:
-      splitter = " at " if " at " in clean_title.lower() else " @ "
-      parts = re.split(splitter, clean_title, maxsplit=1, flags=re.IGNORECASE)
-      clean_title = parts[0].strip()
-      company = parts[1].strip()
-      
-  # 3. Handle Indeed/JobsDB format: "Title - Company"
-  elif " - " in clean_title:
-      parts = clean_title.split(" - ")
-      # Often [Title, Company] or [Title, Location, Company]
-      clean_title = parts[0].strip()
-      # Usually the last part is the company name before we stripped the Indeed.com junk
-      company = parts[-1].strip()
-      
-  # Clean up any leftover punctuation
-  clean_title = clean_title.rstrip(" .").rstrip("-").strip()
-  company = company.rstrip(" .").rstrip("-").strip()
-  
-  # If company wasn't found in title, try to guess from snippet
-  if company == "Unknown Company" and snippet:
-      # Very basic heuristic: Look for capitalized words near the start of the snippet
-      match = re.search(r'^([A-Z][a-zA-Z0-9\s]+)\b', snippet)
-      if match and len(match.group(1)) > 3:
-          # Actually, it's too risky. Let's leave it as Unknown Company if not in title.
-          pass
-          
-  return clean_title, company
-
-
 def _format_results_as_string(jobs: list, platform_name: str, keyword: str, location: str) -> str:
   """Format structured job list into a readable string for LangChain tool output."""
   if not jobs:
     return f"No live {platform_name} job postings found for '{keyword}' in '{location}'."
 
-  formatted_results = []
-  for job in jobs:
-    formatted_results.append(
-        f"- **{job['title']}**\n  Company: {job['company']}\n  Snippet: {job['snippet']}\n  Link: {job['link']}"
-    )
-
+  formatted_results = [
+      f"- **{job['title']}**\n  Company: {job['company']}\n  Snippet: {job['snippet']}\n  Link: {job['link']}"
+      for job in jobs
+  ]
   return f"Found {len(formatted_results)} live {platform_name} jobs for '{keyword}' in {location}:\n\n" + "\n\n".join(
       formatted_results
   )
@@ -184,35 +54,22 @@ def _format_results_as_string(jobs: list, platform_name: str, keyword: str, loca
 
 @tool
 def search_linkedin_jobs(keyword: str, location: str = "Thailand") -> str:
-  """Search specifically for open job positions on LinkedIn using direct LinkedIn API.
+  """Search specifically for open job positions on LinkedIn.
 
   Use this tool whenever the user wants to find live job listings on LinkedIn.
 
   Args:
-      keyword: The job title, tech stack, or skill (e.g., 'Data Scientist',
-        'Python Developer').
+      keyword: The job title, tech stack, or skill (e.g., 'Data Scientist', 'Python Developer').
       location: The target location or country (default is 'Thailand').
   """
   from tools.linkedin_search import linkedin_direct_search
   jobs = linkedin_direct_search(keyword, location, "qdr:w", 10)
-  return _format_results_as_string(jobs, "LinkedIn (Direct)", keyword, location)
+  return _format_results_as_string(jobs, "LinkedIn", keyword, location)
 
-@tool
-def search_indeed_jobs(keyword: str, location: str = "Thailand") -> str:
-  """Search specifically for open job positions on Indeed using Serper API.
-
-  Use this tool whenever the user wants to find live job listings on Indeed.
-
-  Args:
-      keyword: The job title, tech stack, or skill.
-      location: The target location or country (default is 'Thailand').
-  """
-  jobs = _serper_search_structured(keyword, location, "indeed.com/viewjob", "Indeed")
-  return _format_results_as_string(jobs, "Indeed", keyword, location)
 
 @tool
 def search_jobsdb_jobs(keyword: str, location: str = "Thailand") -> str:
-  """Search specifically for open job positions on JobsDB using direct scraping.
+  """Search specifically for open job positions on JobsDB.
 
   Use this tool whenever the user wants to find live job listings on JobsDB.
 
@@ -220,13 +77,14 @@ def search_jobsdb_jobs(keyword: str, location: str = "Thailand") -> str:
       keyword: The job title, tech stack, or skill.
       location: The target location or country (default is 'Thailand').
   """
-  from tools.jobsdb_search import jobsdb_direct_search
-  jobs = jobsdb_direct_search(keyword, location, 10)
-  return _format_results_as_string(jobs, "JobsDB (Direct)", keyword, location)
+  from tools.http_boards import jobsdb_http_search
+  jobs = jobsdb_http_search(keyword, location, 10)
+  return _format_results_as_string(jobs, "JobsDB", keyword, location)
+
 
 @tool
 def search_jobbkk_jobs(keyword: str, location: str = "Thailand") -> str:
-  """Search specifically for open job positions on JobBKK using Serper API.
+  """Search specifically for open job positions on JobBKK.
 
   Use this tool whenever the user wants to find live job listings on JobBKK.
 
@@ -234,5 +92,21 @@ def search_jobbkk_jobs(keyword: str, location: str = "Thailand") -> str:
       keyword: The job title, tech stack, or skill.
       location: The target location or country (default is 'Thailand').
   """
-  jobs = _serper_search_structured(keyword, location, "jobbkk.com/jobs/detail", "JobBKK")
+  from tools.http_boards import jobbkk_http_search
+  jobs = jobbkk_http_search(keyword, location, 10)
   return _format_results_as_string(jobs, "JobBKK", keyword, location)
+
+
+@tool
+def search_jobtopgun_jobs(keyword: str, location: str = "Thailand") -> str:
+  """Search specifically for open job positions on JobTopGun.
+
+  Use this tool whenever the user wants to find live job listings on JobTopGun.
+
+  Args:
+      keyword: The job title, tech stack, or skill.
+      location: The target location or country (default is 'Thailand').
+  """
+  from tools.http_boards import jobtopgun_http_search
+  jobs = jobtopgun_http_search(keyword, location, 10)
+  return _format_results_as_string(jobs, "JobTopGun", keyword, location)

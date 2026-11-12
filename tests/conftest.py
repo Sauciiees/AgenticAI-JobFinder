@@ -5,8 +5,7 @@ The suite runs against a fresh database built by the real migrations:
 - TEST_DATABASE_URL=postgresql://...: that Postgres (CI uses a pgvector container)
 - TEST_POSTGRES=1: an embedded Postgres 16 + pgvector started from the `pgserver` package
 
-Everything runs inside a temporary folder. Fake API keys are set so nothing reaches Gemini or
-Serper (load_dotenv() never overrides variables that are already set).
+Everything runs inside a temporary folder. A fake API key is set so nothing reaches Gemini (load_dotenv() never overrides variables that are already set).
 """
 
 import os
@@ -21,7 +20,6 @@ sys.path.insert(0, str(REPO_ROOT))
 
 os.environ["JWT_SECRET_KEY"] = "test-secret-key-that-is-at-least-32-characters-long"
 os.environ["GOOGLE_API_KEY"] = "fake-google-key-for-tests"
-os.environ["SERPER_API_KEY"] = "fake-serper-key-for-tests"
 os.environ["APP_ENV"] = "test"
 os.environ["STORAGE_BACKEND"] = "local"
 for _var in ("TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY", "SENTRY_DSN", "PROXY_SHARED_SECRET",

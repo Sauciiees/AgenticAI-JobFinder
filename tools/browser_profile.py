@@ -1,7 +1,7 @@
 """
 Browser Profile Setup Script
 =============================
-Run this script ONCE to log into job boards (LinkedIn, JobsDB, Indeed, etc.)
+Run this script ONCE to log into job boards (LinkedIn, JobsDB, JobBKK, JobTopGun)
 in a visible browser window. Your login sessions will be saved to the
 'browser_profile' folder, allowing the Auto-Apply Agent to reuse them later.
 
@@ -38,7 +38,7 @@ def setup_browser_profile():
     print("Please log into any job boards you want to auto-apply on:")
     print("  - LinkedIn: https://www.linkedin.com/login")
     print("  - JobsDB: https://th.jobsdb.com/th")
-    print("  - Indeed: https://secure.indeed.com/auth")
+    print("  - JobTopGun: https://www.jobtopgun.com/th/sign-in")
     print()
     print("When you are done, simply CLOSE the browser window.")
     print("Your login sessions will be saved automatically.")

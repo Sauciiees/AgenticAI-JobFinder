@@ -26,7 +26,7 @@ The first run migrates `data/jobfinder.db` and saves a backup copy next to it fi
 | Try this | You should see |
 |---|---|
 | **Try it as a guest** | Signed in as Alex Demo, a blue guest banner, 3 applications, "10 of 10 agent runs left today" |
-| Click **Find Data Analyst roles in Bangkok…** | 10 or so live jobs. With a valid Serper key, some come from JobsDB, Indeed and JobBKK, not only LinkedIn |
+| Click **Find Data Analyst roles in Bangkok…** | About 25 live jobs from LinkedIn, JobsDB, JobBKK and JobTopGun |
 | Tick 2 jobs → **Continue** | Match scores, notes, and cover letters with resume bullets under "Cover letters and resume bullets" |
 | **Run the dry run** | "Dry run finished. Nothing was submitted.", with steps and a form-answer table for each job; 2 new "Dry run" entries in Applications |
 | Ask "what should I improve in my CV?" | A career-advice answer that quotes the sample CV |
@@ -36,7 +36,7 @@ The first run migrates `data/jobfinder.db` and saves a backup copy next to it fi
 | Create a real account, then sign out | Sign-out works; the old session can't be reused |
 | Send 10 messages as one user | The 11th is refused: "You've used today's 10 agent runs" |
 
-Each search uses about 3 Serper searches and a few Gemini calls on your keys.
+Each search uses a few Gemini calls on your key; the job boards themselves need no key.
 
 ## 3. The full build with real auto-apply (needs Docker)
 

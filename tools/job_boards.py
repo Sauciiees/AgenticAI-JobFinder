@@ -33,13 +33,6 @@ BOARDS = {
         "cookie_url": "https://www.linkedin.com",
         "auth_cookie": "li_at",
     },
-    "indeed": {
-        "name": "Indeed",
-        "hosts": ("indeed.com",),
-        "login_url": "https://secure.indeed.com/auth",
-        "cookie_url": None,
-        "auth_cookie": None,
-    },
     "jobsdb": {
         "name": "JobsDB",
         "hosts": ("jobsdb.com",),
@@ -51,6 +44,13 @@ BOARDS = {
         "name": "JobBKK",
         "hosts": ("jobbkk.com",),
         "login_url": "https://www.jobbkk.com/",  # sign in from the site's own header
+        "cookie_url": None,
+        "auth_cookie": None,
+    },
+    "jobtopgun": {
+        "name": "JobTopGun",
+        "hosts": ("jobtopgun.com",),
+        "login_url": "https://www.jobtopgun.com/th/sign-in",
         "cookie_url": None,
         "auth_cookie": None,
     },

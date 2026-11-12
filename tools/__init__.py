@@ -1,9 +1,9 @@
-from .job_tools import search_indeed_jobs, search_jobbkk_jobs, search_jobsdb_jobs, search_linkedin_jobs
+from .job_tools import search_jobbkk_jobs, search_jobsdb_jobs, search_jobtopgun_jobs, search_linkedin_jobs
 
-# Update the centralized tool list
+# The agent's search tools: one per job board.
 ALL_TOOLS = [
     search_linkedin_jobs,
-    search_indeed_jobs,
     search_jobsdb_jobs,
-    search_jobbkk_jobs
+    search_jobbkk_jobs,
+    search_jobtopgun_jobs,
 ]

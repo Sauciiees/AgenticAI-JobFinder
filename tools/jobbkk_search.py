@@ -56,7 +56,7 @@ def _logo(src: str) -> str:
 
 
 def jobbkk_direct_search(keyword: str, location: str, num_jobs: int = 5, time_filter: str = "qdr:w") -> list:
-    """Directly scrapes the JobBKK search page using Playwright (no Serper).
+    """Directly scrapes the JobBKK search page using Playwright.
 
     JobBKK has no date filter in its search URL, so jobs older than the time filter are dropped here.
     """

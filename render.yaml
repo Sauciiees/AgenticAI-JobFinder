@@ -1,6 +1,6 @@
 # Render Blueprint for the public demo API (free tier).
 # In Render: New > Blueprint > pick this repo. It asks for two values: DATABASE_URL and GOOGLE_API_KEY.
-# See docs/DEPLOY.md. Optional extras (Serper, Turnstile, Sentry, R2) are added later in the
+# See docs/DEPLOY.md. Optional extras (Turnstile, Sentry, R2) are added later in the
 # dashboard under Environment.
 services:
   - type: web

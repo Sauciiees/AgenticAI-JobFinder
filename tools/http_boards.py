@@ -1,9 +1,9 @@
-"""Browser-free scrapers for JobsDB and JobBKK.
+"""Browser-free scrapers for JobsDB, JobBKK and JobTopGun.
 
-Both boards send their search results as ordinary HTML, so they can be read with a plain HTTP request
-and BeautifulSoup: the same cards and fields the Playwright versions (jobsdb_search.py,
-jobbkk_search.py) read, without needing a browser. The public demo server is too small to run Chrome,
-so it uses these.
+All three boards send their search results as ordinary HTML, so they can be read with a plain HTTP
+request and BeautifulSoup. For JobsDB and JobBKK these read the same cards and fields as the Playwright
+versions (jobsdb_search.py, jobbkk_search.py). The public demo server is too small to run Chrome, so
+it uses these; JobTopGun is scraped this way in both builds.
 """
 
 from __future__ import annotations
@@ -110,5 +110,123 @@ def jobbkk_http_search(keyword: str, location: str, num_jobs: int = 5, time_filt
             "platform": "JobBKK",
             "date": posted,
             "logo_url": _logo(img.get("src", "") if img else ""),
+        })
+    return jobs
+
+
+# --- JobTopGun ------------------------------------------------------------------------------------
+
+JOBTOPGUN_BASE = "https://www.jobtopgun.com"
+_JTG_ANYWHERE = {"", "thailand", "anywhere", "remote", "ทั่วประเทศ", "ประเทศไทย"}
+_JTG_THAI_PROVINCES = {"กรุงเทพมหานคร": "bangkok", "กรุงเทพ": "bangkok", "เชียงใหม่": "chiang-mai",
+                       "ชลบุรี": "chonburi", "ภูเก็ต": "phuket", "นนทบุรี": "nonthaburi"}
+_JTG_JOB_HREF = re.compile(r"^/th/jobs/j\d+-\d+")
+_JTG_UI_LINES = {"Save job", "บันทึกงาน"}
+
+
+def _slug_part(text: str) -> str:
+    return urllib.parse.quote(re.sub(r"[\s/]+", "-", text.strip().lower()))
+
+
+def jobtopgun_search_url(keyword: str, location: str) -> str:
+    """e.g. https://www.jobtopgun.com/th/jobs/data-analyst-jobs/in-bangkok"""
+    url = f"{JOBTOPGUN_BASE}/th/jobs/{_slug_part(keyword)}-jobs"
+    loc = location.strip()
+    if loc.lower() not in _JTG_ANYWHERE:
+        loc_slug = _JTG_THAI_PROVINCES.get(loc) or (None if re.search(r"[฀-๿]", loc) else _slug_part(loc))
+        if loc_slug:
+            url += f"/in-{loc_slug}"
+    return url
+
+
+# Thai words that mean the same as common English job-title words, so Thai-only titles match too
+# (e.g. "พนักงานบัญชี" for "Accountant"). Keys are English word beginnings, as in _keyword_prefixes.
+_THAI_EQUIVALENTS = {
+    "accoun": ["บัญชี"], "analys": ["วิเคราะห์"], "data": ["ข้อมูล"], "market": ["การตลาด"],
+    "engine": ["วิศวกร"], "softwa": ["ซอฟต์แวร์"], "develo": ["นักพัฒนา", "โปรแกรมเมอร์"],
+    "progra": ["โปรแกรมเมอร์"], "sales": ["ขาย"], "financ": ["การเงิน"], "design": ["ออกแบบ"],
+    "intern": ["ฝึกงาน", "นักศึกษาฝึกงาน"], "human": ["บุคคล"], "admin": ["ธุรการ"],
+}
+
+
+def _keyword_prefixes(keyword: str) -> list[str]:
+    """Word beginnings to look for in a title: 'Accountant' -> ['accoun'], so 'Accounting Staff' matches."""
+    words = re.findall(r"[a-z0-9]+|[฀-๿]+", keyword.lower())
+    return [w[:6] for w in words if len(w) >= 3]
+
+
+def _title_matches(title: str, prefixes: list[str]) -> bool:
+    if not prefixes:
+        return True
+    low = title.lower()
+    words = re.findall(r"[a-z0-9]+", low)
+    for p in prefixes:
+        if any(word.startswith(p) for word in words):
+            return True
+        # Thai has no spaces between words, so Thai terms are matched anywhere in the title.
+        if any(t in low for t in [p, *_THAI_EQUIVALENTS.get(p, [])] if re.search(r"[฀-๿]", t)):
+            return True
+    return False
+
+
+_POSTED_MARKERS = ("ที่แล้ว", "ที่ผ่านมา", "เมื่อวาน", " ago")
+
+
+def _posted_line(lines: list[str]) -> str:
+    """The card's "… ago" line. Requires an "ago" word, so "สัญญาจ้าง 1 เดือน" (1-month contract) in a
+    title isn't mistaken for the posting age."""
+    return next((s for s in lines if any(m in s for m in _POSTED_MARKERS) and age_in_hours(s) is not None), "")
+
+
+def jobtopgun_http_search(keyword: str, location: str, num_jobs: int = 5, time_filter: str = "qdr:w") -> list:
+    """JobTopGun search results. When nothing matches, JobTopGun lists unrelated recent jobs instead,
+    so only jobs whose title contains a word of the search are kept. It has no date filter in the
+    URL, so older jobs are dropped here."""
+    jobs: list = []
+    url = jobtopgun_search_url(keyword, location)
+    try:
+        soup = _get_soup(url)
+        if not soup.find("a", href=_JTG_JOB_HREF):  # occasionally a page arrives without its job list
+            soup = _get_soup(url)
+    except Exception as e:
+        print(f"JobTopGun HTTP scrape error: {e}")
+        return jobs
+
+    prefixes = _keyword_prefixes(keyword)
+    max_age = _MAX_AGE_H.get(time_filter, 24 * 7)
+    seen: set[str] = set()
+    for link in soup.find_all("a", href=_JTG_JOB_HREF):
+        if len(jobs) >= num_jobs:
+            break
+        href = link["href"].split("?")[0]
+        if href in seen:
+            continue
+        seen.add(href)
+        # The card is the largest ancestor that still holds only this one job.
+        card = link
+        while card.parent is not None and len({a["href"].split("?")[0] for a in
+                                               card.parent.find_all("a", href=_JTG_JOB_HREF)}) == 1:
+            card = card.parent
+        lines = [s.strip() for s in card.get_text("\n").split("\n") if s.strip() and s.strip() not in _JTG_UI_LINES]
+        if len(lines) < 3:
+            continue
+        title, company, place = lines[0], lines[1], lines[2]
+        if not _title_matches(title, prefixes):
+            continue
+        posted = _posted_line(lines)
+        age = age_in_hours(posted) if posted else None
+        if age is not None and age > max_age:
+            continue
+        details = [s for s in lines[3:] if s != posted]
+        img = card.find("img")
+        jobs.append({
+            "title": title,
+            "company": company,
+            "location": place,
+            "snippet": " · ".join(details[:5]),  # job type, salary and the card's highlights
+            "link": urllib.parse.urljoin(JOBTOPGUN_BASE, href),
+            "platform": "JobTopGun",
+            "date": posted,
+            "logo_url": _logo(img.get("src", "")) if img else "",
         })
     return jobs

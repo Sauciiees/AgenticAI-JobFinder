@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Sauciiees/AgenticAI-JobFinder/actions/workflows/ci.yml/badge.svg?branch=chore/phase-1-cleanup)](https://github.com/Sauciiees/AgenticAI-JobFinder/actions/workflows/ci.yml?query=branch%3Achore/phase-1-cleanup)
 
-A multi-agent assistant that searches Thai job boards, scores each role against your CV, drafts a
+A multi-agent assistant that searches four Thai job boards (LinkedIn, JobsDB, JobBKK, JobTopGun), scores each role against your CV, drafts a
 tailored cover letter and resume bullets, and (on its owner's machine) applies in a real browser.
 Built with **LangGraph**, **Gemini**, **FastAPI** and **Postgres + pgvector**.
 
@@ -24,7 +24,7 @@ approve the drafted application before anything is sent.
 flowchart LR
     U([You]) --> R{Router}
     R -- question --> C[Career advisor chat]
-    R -- job search --> S[Discovery agent<br/>LinkedIn, JobsDB, Indeed, JobBKK]
+    R -- job search --> S[Discovery agent<br/>LinkedIn, JobsDB, JobBKK, JobTopGun]
     S --> P[[You pick jobs]]
     P --> M[Matching agent<br/>scores each job vs. CV]
     M --> T[Tailoring agent<br/>cover letter + bullets]
@@ -48,7 +48,7 @@ flowchart LR
     API --> PG[(Neon Postgres<br/>users, chats, pgvector,<br/>LangGraph checkpoints)]
     PG -.- CV[(CVs in Postgres<br/>or a private bucket)]
     API --> Gemini[Gemini API]
-    API --> Serper[Serper search]
+    API --> Boards[Job boards<br/>scraped over HTTP]
     GH[GitHub Actions] -->|CI on every PR| API
     GH -->|daily cleanup| API
     API -.-> Sentry
@@ -57,7 +57,7 @@ flowchart LR
 | Concern | How it's handled |
 |---|---|
 | Auth | bcrypt passwords, JWT in an `httpOnly`, `Secure`, `SameSite=Strict` cookie, CSRF double-submit, per-user token key (logout signs out everywhere) |
-| Abuse | Cloudflare Turnstile on sign-up and guests; rate limits and daily quotas counted in Postgres (10 agent runs per user, 60 overall, Serper budget) |
+| Abuse | Cloudflare Turnstile on sign-up and guests; rate limits and daily quotas counted in Postgres (10 agent runs per user, 60 overall) |
 | Privacy | CVs stored privately (in Postgres, or a private bucket with short-lived signed links), never as public files; guests deleted after 24 h, CVs and idle chats after 30 days; one-click account deletion |
 | Hardening | The API only answers requests from the proxy; CSP and security headers; uploads checked by content (PDF/DOCX), size-capped, parsed before storing |
 | Reliability | Alembic migrations run before each start; deploys only after CI passes; Sentry on both ends; "waking up" screen for the free tier's cold start |
@@ -65,8 +65,8 @@ flowchart LR
 
 **Two builds from one codebase.** `ENABLE_BROWSER_AUTOMATION` switches between:
 
-- **Public demo** (`api.dockerfile`): no browser. LinkedIn's public search page plus Serper, job
-  pages read over plain HTTP, auto-apply as a dry run, quotas on.
+- **Public demo** (`api.dockerfile`): no browser. All four boards' search pages and the job pages
+  are scraped over plain HTTP; auto-apply runs as a dry run; quotas on.
 - **Local full build** (`backend.dockerfile` + `docker compose`): Playwright searches, job-board
   sign-in in a visible browser (viewable through noVNC), and real auto-apply with Gemini vision.
   Your job-board sessions never leave your machine.
@@ -77,7 +77,7 @@ flowchart LR
 python -m venv .venv
 .venv\Scripts\activate            # macOS/Linux: source .venv/bin/activate
 pip install -r requirements-dev.txt
-copy .env.example .env            # then fill in GOOGLE_API_KEY, SERPER_API_KEY, JWT_SECRET_KEY
+copy .env.example .env            # then fill in GOOGLE_API_KEY and JWT_SECRET_KEY
 python scripts/dev.py             # http://localhost:8000, demo mode, SQLite
 ```
 

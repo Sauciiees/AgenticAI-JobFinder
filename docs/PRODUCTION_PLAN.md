@@ -32,7 +32,7 @@ A cold start of 30–60 seconds is accepted. The frontend shows a "waking up" st
   - 60 agent runs per day across everyone; when hit, the app shows "Demo quota reached"
   - Login: 5 per minute per IP address
   - Sign-up: 3 per hour per IP address
-- Every user runs on the owner's Gemini and Serper keys.
+- Every user runs on the owner's Gemini key.
 - **Retention:**
   - CVs and chats are deleted after 30 days.
   - A "Delete my account" button removes everything.
@@ -60,5 +60,5 @@ A cold start of 30–60 seconds is accepted. The frontend shows a "waking up" st
 
 ## Changes made during implementation
 
-- **Search in the demo.** JobsDB, Indeed and JobBKK searches drive a real browser, which the slim image doesn't have. In the demo they go through Serper's `site:` search instead, with a daily Serper budget (default 80, about the free tier's 2,500 a month). LinkedIn's public search page works over plain HTTP in both builds.
+- **Job boards.** The app searches LinkedIn, JobsDB, JobBKK and JobTopGun. All four send their search results as plain HTML, so the demo scrapes them without a browser; the local build still drives JobsDB and JobBKK with Playwright. Indeed was dropped in November 2026: it now blocks automated access (Cloudflare bot check, 403 on plain requests and RSS) and its Thai job pages aren't in Google or Bing, so no legitimate route was left. Serper was dropped with it.
 - **Token key.** Every login token carries a per-user key. SQLite reuses the ids of deleted users, so without it an old token could open a newer account. Logout rotates the key, which signs the user out everywhere.

@@ -62,7 +62,6 @@ variables.
 
 | Add | What it gives you | Where to get it |
 |---|---|---|
-| `SERPER_API_KEY` | Search also covers JobsDB, Indeed and JobBKK (not just LinkedIn) | https://serper.dev |
 | `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | "I'm human" check on sign-up and guest accounts (recommended once you share the link widely) | Cloudflare → Turnstile → Add widget, hostname `<name>.pages.dev` |
 | `SENTRY_DSN`, `SENTRY_FRONTEND_DSN` | Error alerts | https://sentry.io, one Python and one Browser project |
 | `DEMO_VIDEO_URL` | A "watch the real thing" link next to the dry run | Your video link |

@@ -155,8 +155,8 @@ def job_search_agent(state: State):
   if config.ENABLE_BROWSER_AUTOMATION:
       all_jobs = _browser_job_search(search_keyword, search_location, time_filter)
   else:
-      # Public demo: no browser in the container. LinkedIn's public page plus Serper, and the
-      # job pages fetched over plain HTTP.
+      # Public demo: no browser in the container. All four boards' search pages and the job pages
+      # are read over plain HTTP.
       from tools.job_tools import public_job_search
       from tools.scraper import enrich_jobs_light
 
@@ -165,7 +165,7 @@ def job_search_agent(state: State):
   safe_kw = search_keyword.encode('ascii', 'ignore').decode('ascii')
   print(f"Total jobs found for '{safe_kw}': {len(all_jobs)}")
 
-  # Name the boards that actually returned jobs (some may be skipped, e.g. when the Serper budget is used up).
+  # Name the boards that actually returned jobs (a board that's down or has no match is skipped).
   sources = sorted({str(j.get("platform") or "").split(" ")[0] for j in all_jobs} - {""})
   where = f" on {', '.join(sources)}" if sources else ""
   summary = (f"Found {len(all_jobs)} jobs for '{search_keyword}'{where}." if all_jobs
@@ -177,8 +177,8 @@ def job_search_agent(state: State):
 
 
 def _browser_job_search(search_keyword: str, search_location: str, time_filter: str) -> list:
-  """Full local build: Playwright-driven searches on each board, then pages scraped in a browser."""
-  from tools.indeed_search import indeed_direct_search
+  """Full local build: Playwright-driven searches where a board needs one, then pages scraped in a browser."""
+  from tools.http_boards import jobtopgun_http_search
   from tools.jobbkk_search import jobbkk_direct_search
   from tools.jobsdb_search import jobsdb_direct_search
   from tools.linkedin_search import linkedin_direct_search
@@ -190,15 +190,15 @@ def _browser_job_search(search_keyword: str, search_location: str, time_filter: 
   print(f"Direct searching LinkedIn for {safe_kw}...")
   all_jobs.extend(linkedin_direct_search(search_keyword, search_location, time_filter, 10))
 
-  # 2. JobsDB, Indeed and JobBKK: direct searches via Playwright, each in its own thread
-  #    (the sync Playwright API can't run on this thread's event loop) and in parallel.
-  #    All three honour the location and the time filter.
-  print(f"Direct searching JobsDB, Indeed and JobBKK for {safe_kw}...")
+  # 2. JobsDB and JobBKK via Playwright, JobTopGun over HTTP; each in its own thread (the sync
+  #    Playwright API can't run on this thread's event loop) and in parallel. All three honour the
+  #    location and the time filter.
+  print(f"Direct searching JobsDB, JobBKK and JobTopGun for {safe_kw}...")
   from concurrent.futures import ThreadPoolExecutor
   direct_searches = [
       ("JobsDB", jobsdb_direct_search),
-      ("Indeed", indeed_direct_search),
       ("JobBKK", jobbkk_direct_search),
+      ("JobTopGun", jobtopgun_http_search),
   ]
   with ThreadPoolExecutor(max_workers=len(direct_searches)) as executor:
       futures = [
@@ -208,10 +208,6 @@ def _browser_job_search(search_keyword: str, search_location: str, time_filter: 
       for name, future in futures:
           try:
               found = future.result()
-              if name == "Indeed" and not found:
-                  # Indeed often blocks automated browsers; fall back to Indeed links via Serper.
-                  from tools.job_tools import indeed_serper_search
-                  found = indeed_serper_search(search_keyword, search_location, time_filter, 5)
               print(f"  {name}: {len(found)} jobs")
               all_jobs.extend(found)
           except Exception as e:
